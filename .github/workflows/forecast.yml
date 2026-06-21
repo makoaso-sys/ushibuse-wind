@@ -1,0 +1,49 @@
+name: forecast-dashboard
+
+# クラウド(GitHub)上で定期実行する。あなたのPCの電源状態に依存しない。
+on:
+  schedule:
+    - cron: "0 */3 * * *"     # 3時間ごと(UTC)。お好みで変更
+  workflow_dispatch:           # Actionsタブから手動実行も可
+
+permissions:
+  contents: write              # 生成物を同じリポジトリに push するため
+
+concurrency:
+  group: forecast
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 日本語フォント(チャートの文字化け防止)
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存インストール
+        run: pip install -r requirements.txt
+
+      - name: 予測を取得 (Open-Meteo -> wind.db)
+        run: python collect_forecasts.py
+
+      - name: ダッシュボード生成 (docs/index.html, docs/forecast.png)
+        run: python generate_dashboard.py
+
+      # ── 任意: 走れそうなら ntfy でスマホ通知 ──
+      # Secrets に NTFY_TOPIC を登録し、下のコメントを外す
+      # - name: 通知
+      #   run: python notify.py --topic "${{ secrets.NTFY_TOPIC }}"
+
+      - name: コミット & プッシュ
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A docs wind.db
+          git commit -m "update forecast $(date -u +%FT%TZ)" || echo "no changes"
+          git push
