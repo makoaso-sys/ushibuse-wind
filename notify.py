@@ -4,14 +4,14 @@
 
 通知先は ntfy(無料・アカウント不要・OSS)を既定にしている。
   1. スマホに ntfy アプリを入れる(iOS/Android)
-  2. 適当に推測されにくいトピック名を決めて購読する(例: ushibuse-wind-9f3k2)
+  2. 適当に推測されにくいトピック名を決めて購読する(例: breeze-play-ushibuse-9f3k2)
   3. 下の NTFY_TOPIC を同じ名前にする
 それだけで、このスクリプトが POST した内容がスマホに届く。
 
 使い方:
   python notify.py --dry-run        # 送信せず内容だけ表示(動作確認)
   python notify.py                  # 実際に送信
-  python notify.py --topic ushibuse-wind-9f3k2 --db /data/wind.db
+  python notify.py --topic breeze-play-ushibuse-9f3k2 --db /data/wind.db
 
 cron 例(取得の後、1日2回判定):
   20 0,12 * * * cd /path && python3 notify.py >> notify.log 2>&1
@@ -31,7 +31,7 @@ import phase6_common as pc
 # 設定
 # ============================================================
 NTFY_SERVER = "https://ntfy.sh"
-NTFY_TOPIC = "ushibuse-wind-CHANGE-ME"   # ★推測されにくい名前に変更する
+NTFY_TOPIC = "breeze-play-ushibuse-9f3k2"
 DB_PATH = "wind.db"
 NOTIFY_ONLY_WHEN_SAILABLE = True         # 走れそうな時だけ通知(False=毎回状況を送る)
 
