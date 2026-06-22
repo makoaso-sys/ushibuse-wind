@@ -85,8 +85,8 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax1.set_ylabel("風速 (m/s)")
     ax1.set_ylim(0, max(pc.SAIL_MAX_MS + 2, 16))
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
-    ax1.set_title(f"牛臥海岸 複数モデル風予測（発表 {_fa.month}/{_fa.day}"
-                  f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST）", fontsize=12)
+    ax1.set_title(f"Ushibuse Beach Multi-model Wind Forecast  (issued {_fa.month}/{_fa.day}"
+                  f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST)", fontsize=12)
     ax1.legend(fontsize=8, ncol=4, loc="upper right")
     ax1.grid(alpha=.25)
 
@@ -135,7 +135,7 @@ HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="1800">
-<title>牛臥海岸 風予測</title>
+<title>Ushibuse Beach Wind Forecast</title>
 <style>
   :root {{ color-scheme: light dark; }}
   body {{ font-family: system-ui, sans-serif; margin: 0; padding: 16px;
@@ -155,7 +155,7 @@ HTML = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>🏄 牛臥海岸 風予測</h1>
+<h1>🏄 Ushibuse Beach Wind Forecast</h1>
 <p class="updated">最終更新: {updated} JST　/　出走レンジ {smin:.0f}–{smax:.0f} m/s</p>
 <div class="cards">{cards}</div>
 <img src="forecast.png?v={ver}" alt="複数モデル風予測">
