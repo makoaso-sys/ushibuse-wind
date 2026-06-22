@@ -107,7 +107,7 @@ def _aggregate(chosen: dict[str, dict], fa: str) -> dict | None:
     if not chosen:
         return None
     per_model = []
-    us, vs = [], []
+    us, vs, speeds = [], [], []
     n_sail = 0
     valid_time = None
     for m, r in sorted(chosen.items()):
@@ -116,6 +116,7 @@ def _aggregate(chosen: dict[str, dict], fa: str) -> dict | None:
         ok = (SAIL_MIN_MS <= sp_ms <= SAIL_MAX_MS) and \
              (di is not None and dir_in_arcs(di))
         n_sail += int(ok)
+        speeds.append(sp_ms)
         if r["wind_u"] is not None:
             us.append(r["wind_u"]); vs.append(r["wind_v"])
         valid_time = r["valid_time"]
@@ -126,7 +127,8 @@ def _aggregate(chosen: dict[str, dict], fa: str) -> dict | None:
 
     mean_u = sum(us) / len(us) if us else 0.0
     mean_v = sum(vs) / len(vs) if vs else 0.0
-    mean_sp, mean_dir = uv_to_speed_dir(mean_u, mean_v)
+    _, mean_dir = uv_to_speed_dir(mean_u, mean_v)
+    mean_sp = sum(speeds) / len(speeds) if speeds else 0.0
     n = len(per_model)
     vt_jst = datetime.fromisoformat(valid_time).astimezone(JST) if valid_time else None
     return {
