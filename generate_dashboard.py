@@ -117,7 +117,7 @@ def make_chart(conn, fa: str, path: str) -> None:
                    headwidth=4, headlength=5, pivot="mid")
     ax2.set_ylim(-1, 1); ax2.set_yticks([])
     ax2.set_ylabel("風向\n(jma_msm)", fontsize=9)
-    ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上=北）", transform=ax2.transAxes,
+    ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上が北）", transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
     ax2.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
     ax2.grid(alpha=.2, axis="x")
