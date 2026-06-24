@@ -90,12 +90,10 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax1.legend(fontsize=8, ncol=4, loc="upper right")
     ax1.grid(alpha=.25)
 
-    # 出走判定の対象時刻(JST 10:00/14:00)に縦線
-    for hour in pc.TARGET_HOURS_JST:
-        vtiso = pc.next_clock_valid_time(conn, fa, hour, pc.JUDGE_WITHIN_H)
-        if not vtiso:
-            continue
+    # 出走判定の対象時刻(次の2時刻)に縦線
+    for vtiso in pc.next_n_clock_valid_times(conn, fa, pc.TARGET_HOURS_JST):
         x = _jst_naive(vtiso)
+        hour = datetime.fromisoformat(vtiso).astimezone(pc.JST).hour
         ax1.axvline(x, color="#6741d9", ls=":", lw=1.3, alpha=.7)
         ax1.text(x, ax1.get_ylim()[1] * 0.97, f"{hour:02d}:00", color="#6741d9",
                  fontsize=8, ha="center", va="top")
@@ -176,8 +174,8 @@ CARD = """<div class="card">
 
 def make_html(conn, fa: str, path: str) -> None:
     cards = []
-    for hour in pc.TARGET_HOURS_JST:
-        ev = pc.evaluate_clock(conn, hour, fetched_at=fa)
+    for vt_iso in pc.next_n_clock_valid_times(conn, fa, pc.TARGET_HOURS_JST):
+        ev = pc.evaluate_at(conn, vt_iso, fa)
         if not ev:
             continue
         vt = ev["valid_time_jst"]

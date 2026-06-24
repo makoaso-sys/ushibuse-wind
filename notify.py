@@ -100,13 +100,13 @@ def run(db_path: str, topic: str, server: str, dry: bool) -> None:
         return
     print(f"判定スナップショット: {fa} (UTC)")
 
-    for hour in pc.TARGET_HOURS_JST:
-        ev = pc.evaluate_clock(conn, hour, fetched_at=fa)
+    for vt_iso in pc.next_n_clock_valid_times(conn, fa, pc.TARGET_HOURS_JST):
+        ev = pc.evaluate_at(conn, vt_iso, fa)
         if not ev:
             continue
         verdict = "出走可" if ev["sailable"] else "見送り"
         vt = ev["valid_time_jst"]
-        when = vt.strftime("%m/%d %H:%M") if vt else f"{hour:02d}:00"
+        when = vt.strftime("%m/%d %H:%M") if vt else ev["label"]
         print(f"  {when} JST: {verdict}  平均{ev['mean_speed_ms']}m/s "
               f"{ev['mean_compass']}  合議{ev['agree']}")
 

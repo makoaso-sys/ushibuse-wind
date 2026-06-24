@@ -170,6 +170,45 @@ def next_clock_valid_time(conn: sqlite3.Connection, fa: str, hour_jst: int,
     return None
 
 
+def next_n_clock_valid_times(conn: sqlite3.Connection, fa: str,
+                              target_hours: list[int], n: int = 2,
+                              within_h: float = 48.0) -> list[str]:
+    """現在時刻より後で来る target_hours の時刻を、昇順で最大 n 個返す。"""
+    now_jst = datetime.now(JST)
+    q = """SELECT DISTINCT valid_time FROM forecasts
+           WHERE fetched_at=? AND lead_hours BETWEEN 0 AND ?
+           ORDER BY valid_time"""
+    results = []
+    for r in conn.execute(q, (fa, within_h)):
+        vt = datetime.fromisoformat(r["valid_time"]).astimezone(JST)
+        if vt <= now_jst:
+            continue
+        if vt.minute == 0 and vt.hour in target_hours:
+            results.append(r["valid_time"])
+            if len(results) >= n:
+                break
+    return results
+
+
+def evaluate_at(conn: sqlite3.Connection, vt_iso: str,
+                fetched_at: str | None = None) -> dict | None:
+    """指定した valid_time の出走可否を評価する。"""
+    fa = fetched_at or latest_fetched_at(conn)
+    if not fa:
+        return None
+    chosen = {r["model"]: dict(r) for r in conn.execute(
+        """SELECT model, valid_time, lead_hours, wind_speed_ms, wind_dir_deg,
+                  wind_u, wind_v
+           FROM forecasts WHERE fetched_at=? AND valid_time=? ORDER BY model""",
+        (fa, vt_iso))}
+    ev = _aggregate(chosen, fa)
+    if ev:
+        vt_jst = datetime.fromisoformat(vt_iso).astimezone(JST)
+        ev["target_hour"] = vt_jst.hour
+        ev["label"] = f"{vt_jst.hour:02d}:00"
+    return ev
+
+
 def evaluate_clock(conn: sqlite3.Connection, hour_jst: int,
                    fetched_at: str | None = None,
                    within_h: float = JUDGE_WITHIN_H) -> dict | None:
