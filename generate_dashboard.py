@@ -161,6 +161,7 @@ HTML = """<!doctype html>
 <img src="forecast.png?v={ver}" alt="複数モデル風予測">
 <p class="note">出走判定は 10:00 / 14:00（JST）時点の予測に基づく。複数モデルの生予測の合議（補正前）。
 jma_msm(5km) が局地の本命。このページは約30分ごとに自動再読込します。</p>
+<p class="note">【出走判定条件】風速 {smin:.0f}〜{smax:.0f} m/s ／ 風向 NE〜S〜W（45°〜270°）／ {nmin} モデル以上が条件を満たすこと</p>
 </body>
 </html>
 """
@@ -190,7 +191,7 @@ def make_html(conn, fa: str, path: str) -> None:
     updated = f"{_fa.month}/{_fa.day}({_WD[_fa.weekday()]}) {_fa:%H:%M}"
     ver = re.sub(r"\D", "", fa)[:12]
     html = HTML.format(updated=updated, smin=pc.SAIL_MIN_MS, smax=pc.SAIL_MAX_MS,
-                       cards="".join(cards), ver=ver)
+                       nmin=pc.MIN_MODELS_AGREE, cards="".join(cards), ver=ver)
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
 
