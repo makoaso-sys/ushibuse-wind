@@ -23,8 +23,6 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
-import urllib.parse
-
 import requests
 
 import phase6_common as pc
@@ -75,14 +73,19 @@ def build_message(ev: dict) -> tuple[str, str, str]:
     return head, body, tags
 
 
+_PRIORITY_MAP = {"max": 5, "urgent": 5, "high": 4, "default": 3, "low": 2, "min": 1}
+
+
 def send_ntfy(server: str, topic: str, title: str, body: str, tags: str,
               priority: str = "default") -> bool:
-    url = f"{server}/{topic}"
     try:
-        r = requests.post(url, data=body.encode("utf-8"),
-                          headers={"Title": urllib.parse.quote(title),
-                                   "Tags": tags,
-                                   "Priority": priority}, timeout=20)
+        r = requests.post(server, json={
+            "topic": topic,
+            "title": title,
+            "message": body,
+            "tags": [tags],
+            "priority": _PRIORITY_MAP.get(priority, 3),
+        }, timeout=20)
         if r.status_code == 200:
             return True
         print(f"  ntfy エラー HTTP {r.status_code}: {r.text[:120]}", file=sys.stderr)
