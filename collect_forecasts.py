@@ -60,6 +60,9 @@ HOURLY_VARS = [
     "wind_direction_10m",
     "surface_pressure",
     "temperature_2m",
+    "weather_code",
+    "precipitation_probability",
+    "precipitation",
 ]
 
 FORECAST_DAYS = 3          # 12〜24h をカバーするのに十分(MSM の地平線にも収まる)
@@ -88,16 +91,19 @@ def deg_to_uv(speed: float, dir_deg: float) -> tuple[float, float]:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS forecasts (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    model                TEXT    NOT NULL,   -- 例: jma_msm
-    fetched_at           TEXT    NOT NULL,   -- UTC ISO8601(発表時刻の代理)
-    valid_time           TEXT    NOT NULL,   -- UTC ISO8601(予測対象時刻)
-    lead_hours           REAL    NOT NULL,   -- valid_time - fetched_at(時間)
+    model                TEXT    NOT NULL,
+    fetched_at           TEXT    NOT NULL,
+    valid_time           TEXT    NOT NULL,
+    lead_hours           REAL    NOT NULL,
     wind_speed_ms        REAL,
     wind_dir_deg         REAL,
-    wind_u               REAL,               -- 東向き成分(m/s)
-    wind_v               REAL,               -- 北向き成分(m/s)
+    wind_u               REAL,
+    wind_v               REAL,
     surface_pressure_hpa REAL,
     temperature_2m_c     REAL,
+    weather_code         INTEGER,
+    precipitation_prob   REAL,
+    precipitation_mm     REAL,
     latitude             REAL,
     longitude            REAL,
     UNIQUE(model, fetched_at, valid_time)
@@ -107,21 +113,36 @@ CREATE INDEX IF NOT EXISTS idx_model_valid ON forecasts(model, valid_time);
 CREATE INDEX IF NOT EXISTS idx_lead       ON forecasts(model, lead_hours);
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE forecasts ADD COLUMN weather_code INTEGER",
+    "ALTER TABLE forecasts ADD COLUMN precipitation_prob REAL",
+    "ALTER TABLE forecasts ADD COLUMN precipitation_mm REAL",
+]
+
 INSERT_SQL = """
 INSERT OR IGNORE INTO forecasts
     (model, fetched_at, valid_time, lead_hours,
      wind_speed_ms, wind_dir_deg, wind_u, wind_v,
-     surface_pressure_hpa, temperature_2m_c, latitude, longitude)
+     surface_pressure_hpa, temperature_2m_c,
+     weather_code, precipitation_prob, precipitation_mm,
+     latitude, longitude)
 VALUES
     (:model, :fetched_at, :valid_time, :lead_hours,
      :wind_speed_ms, :wind_dir_deg, :wind_u, :wind_v,
-     :surface_pressure_hpa, :temperature_2m_c, :latitude, :longitude)
+     :surface_pressure_hpa, :temperature_2m_c,
+     :weather_code, :precipitation_prob, :precipitation_mm,
+     :latitude, :longitude)
 """
 
 
 def init_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -153,6 +174,9 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     wdir = hourly.get("wind_direction_10m") or []
     pres = hourly.get("surface_pressure") or []
     temp = hourly.get("temperature_2m") or []
+    wcode = hourly.get("weather_code") or []
+    prob = hourly.get("precipitation_probability") or []
+    precip = hourly.get("precipitation") or []
 
     rows: list[dict] = []
     for i, t in enumerate(times):
@@ -176,6 +200,9 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
             "wind_v": round(v, 4) if v is not None else None,
             "surface_pressure_hpa": _get(pres, i),
             "temperature_2m_c": _get(temp, i),
+            "weather_code": _get(wcode, i),
+            "precipitation_prob": _get(prob, i),
+            "precipitation_mm": _get(precip, i),
             "latitude": payload.get("latitude", LATITUDE),
             "longitude": payload.get("longitude", LONGITUDE),
         })

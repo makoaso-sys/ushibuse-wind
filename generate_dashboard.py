@@ -25,6 +25,8 @@ from datetime import datetime
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.font_manager as fm
+from matplotlib.font_manager import FontProperties
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
@@ -34,13 +36,36 @@ import phase6_common as pc
 
 MAX_LEAD = 48
 
-# 日本語フォント(無ければ既定にフォールバック)
-for _f in ("Noto Sans CJK JP", "Noto Sans CJK", "IPAGothic", "sans-serif"):
-    plt.rcParams["font.family"] = _f
-    break
+# 日本語フォント: インストール済みのものを優先順に選択
+_available_fonts = {f.name for f in fm.fontManager.ttflist}
+for _f in ("Noto Sans CJK JP", "Noto Sans CJK", "Hiragino Sans", "YuGothic",
+           "BIZ UDGothic", "IPAGothic", "AppleGothic", "sans-serif"):
+    if _f in _available_fonts or _f == "sans-serif":
+        plt.rcParams["font.family"] = _f
+        break
 plt.rcParams["axes.unicode_minus"] = False
 
+# 天気シンボル用フォント(☀☁☔ が入っているもの。DejaVu Sans を優先)
+_sym_fp = None
+for _fn in ("DejaVu Sans", "Apple Symbols"):
+    if _fn in _available_fonts:
+        _sym_fp = FontProperties(family=_fn)
+        break
+
 _WD = ["月", "火", "水", "木", "金", "土", "日"]   # weekday() 0..6
+
+# 凡例の表示順
+_LEGEND_ORDER = ["jma_msm", "jma_gsm", "gfs_seamless", "ecmwf_ifs025"]
+
+
+def _wmo_label(code) -> tuple[str, str]:
+    """WMO天気コード -> (シンボル, 背景色)  ☀=晴  ☁=曇/霧  ☔=雨/雪/雷"""
+    if code is None:
+        return "", "#ffffff"
+    c = int(code)
+    if c <= 2:  return "☀", "#FFF9C4"   # 快晴・晴れ
+    if c <= 60: return "☁", "#CFD8DC"   # 曇り・霧・霧雨
+    return "☔", "#BBDEFB"               # 雨・雪・驟雨・雷雨
 
 
 def _fmt_date(x, pos=None):
@@ -58,10 +83,12 @@ def _jst_naive(iso: str):
 def make_chart(conn, fa: str, path: str) -> None:
     models = [r["model"] for r in conn.execute(
         "SELECT DISTINCT model FROM forecasts WHERE fetched_at=? ORDER BY model", (fa,))]
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6.4), sharex=True,
-                                   gridspec_kw={"height_ratios": [3, 1]})
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 10), sharex=True,
+                                        gridspec_kw={"height_ratios": [3, 1, 2]})
     colors = {"jma_msm": "#d6336c", "jma_gsm": "#f08c00",
               "ecmwf_ifs025": "#1f5fa5", "gfs_seamless": "#2f9e44"}
+
+    # ── パネル1: 風速 ──────────────────────────────────────────
     t0 = None
     for m in models:
         rows = conn.execute(
@@ -87,10 +114,20 @@ def make_chart(conn, fa: str, path: str) -> None:
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
     ax1.set_title(f"Ushibuse Beach Multi-model Wind Forecast  (issued {_fa.month}/{_fa.day}"
                   f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST)", fontsize=12)
-    ax1.legend(fontsize=8, ncol=4, loc="upper right")
     ax1.grid(alpha=.25)
 
-    # 出走判定の対象時刻(次の2時刻)に縦線
+    # 凡例を指定順・縦並びで表示
+    handles_dict = {line.get_label(): line for line in ax1.get_lines()}
+    ordered_handles, ordered_labels = [], []
+    for m in _LEGEND_ORDER:
+        label = m + ("（本命）" if m == "jma_msm" else "")
+        if label in handles_dict:
+            ordered_handles.append(handles_dict[label])
+            ordered_labels.append(label)
+    ax1.legend(ordered_handles, ordered_labels, fontsize=8, loc="upper right",
+               ncol=1, framealpha=0.8)
+
+    # 出走判定の対象時刻に縦線
     for vtiso in pc.next_n_clock_valid_times(conn, fa, pc.TARGET_HOURS_JST):
         x = _jst_naive(vtiso)
         hour = datetime.fromisoformat(vtiso).astimezone(pc.JST).hour
@@ -98,7 +135,7 @@ def make_chart(conn, fa: str, path: str) -> None:
         ax1.text(x, ax1.get_ylim()[1] * 0.97, f"{hour:02d}:00", color="#6741d9",
                  fontsize=8, ha="center", va="top")
 
-    # 風向(jma_msm) 一定長・中央ピボットの矢印
+    # ── パネル2: 風向矢印 ──────────────────────────────────────
     rows = conn.execute(
         """SELECT valid_time, wind_u, wind_v FROM forecasts
            WHERE fetched_at=? AND model='jma_msm' AND lead_hours<=?
@@ -117,8 +154,52 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax2.set_ylabel("風向\n(jma_msm)", fontsize=9)
     ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上が北）", transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
-    ax2.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
     ax2.grid(alpha=.2, axis="x")
+
+    # ── パネル3: 天気・気温・降水（テキスト表形式） ──────────────
+    wx_rows = conn.execute(
+        """SELECT valid_time, temperature_2m_c, weather_code, precipitation_mm
+           FROM forecasts
+           WHERE fetched_at=? AND model='jma_msm' AND lead_hours<=?
+           ORDER BY valid_time""", (fa, MAX_LEAD)).fetchall()
+
+    # y軸: 3行構成(天気=2.5, 気温=1.5, 降水=0.5)
+    ax3.set_ylim(0, 3)
+    ax3.set_yticks([0.5, 1.5, 2.5])
+    ax3.set_yticklabels(["降水量\n(mm)", "気温\n(°C)", "天気\n(jma_msm)"], fontsize=7)
+    ax3.tick_params(axis="y", length=0)
+    ax3.axhline(1.0, color="#ddd", lw=0.7)
+    ax3.axhline(2.0, color="#ddd", lw=0.7)
+
+    step = 3
+    for i, r in enumerate(wx_rows):
+        if i % step != 0:
+            continue
+        x = _jst_naive(r["valid_time"])
+
+        # 天気シンボル (y=2.5)
+        label, bg = _wmo_label(r["weather_code"])
+        ax3.text(x, 2.5, label if label else "--", ha="center", va="center",
+                 fontsize=11, color="#333",
+                 fontproperties=_sym_fp,
+                 bbox=dict(boxstyle="round,pad=0.2", facecolor=bg,
+                           edgecolor="none", alpha=0.85))
+
+        # 気温 (y=1.5)
+        temp = r["temperature_2m_c"]
+        ax3.text(x, 1.5, f"{temp:.0f}°" if temp is not None else "--",
+                 ha="center", va="center", fontsize=8, color="#e8590c", fontweight="bold")
+
+        # 降水量 (y=0.5)
+        precip = r["precipitation_mm"]
+        precip_txt = f"{precip:.1f}" if precip is not None else "--"
+        color = "#1565C0" if (precip or 0) > 0 else "#999"
+        ax3.text(x, 0.5, precip_txt, ha="center", va="center",
+                 fontsize=8, color=color, fontweight="bold" if (precip or 0) > 0 else "normal")
+
+    ax3.grid(alpha=.2, axis="x")
+    ax3.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
+
     plt.tight_layout()
     plt.savefig(path, dpi=110)
     plt.close(fig)
@@ -201,6 +282,15 @@ def main():
     args = ap.parse_args()
 
     conn = pc.connect(args.db)
+    # 旧DBに新カラムがない場合のマイグレーション
+    for sql in ("ALTER TABLE forecasts ADD COLUMN weather_code INTEGER",
+                "ALTER TABLE forecasts ADD COLUMN precipitation_prob REAL",
+                "ALTER TABLE forecasts ADD COLUMN precipitation_mm REAL"):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+    conn.commit()
     fa = pc.latest_fetched_at(conn)
     if not fa:
         print("予測データがありません。先に collect_forecasts.py を実行してください。")
