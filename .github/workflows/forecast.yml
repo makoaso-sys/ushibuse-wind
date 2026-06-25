@@ -43,7 +43,9 @@ jobs:
           git add -A docs wind.db
           git commit -m "update forecast $(date -u +%FT%TZ)" || echo "no changes"
           for i in 1 2 3; do
-            git pull --rebase -X theirs && git push && break
+            git pull --rebase -X theirs && git push && exit 0
             echo "push failed, retrying ($i/3)..."
             sleep 10
           done
+          echo "push failed after 3 retries" >&2
+          exit 1
