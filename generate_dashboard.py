@@ -200,12 +200,13 @@ def make_chart(conn, fa: str, path: str) -> None:
         ax3.text(x, 1.5, f"{temp:.0f}°" if temp is not None else "--",
                  ha="center", va="center", fontsize=13, color=t_color, fontweight="bold")
 
-        # 降水量 (y=0.5)
+        # 降水量 (y=0.5) — 四捨五入後の値で色を決定
         precip = r["precipitation_mm"]
-        precip_txt = f"{precip:.0f}" if precip is not None else "--"  # mm/h
-        color = "#1565C0" if (precip or 0) > 0 else "#999"
+        precip_int = round(precip) if precip is not None else None
+        precip_txt = str(precip_int) if precip_int is not None else "--"
+        color = "#1565C0" if (precip_int or 0) > 0 else "#999"
         ax3.text(x, 0.5, precip_txt, ha="center", va="center",
-                 fontsize=13, color=color, fontweight="bold" if (precip or 0) > 0 else "normal")
+                 fontsize=13, color=color, fontweight="bold" if (precip_int or 0) > 0 else "normal")
 
     ax3.grid(alpha=.2, axis="x")
     ax3.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
