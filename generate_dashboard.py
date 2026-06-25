@@ -23,6 +23,7 @@ import re
 import sqlite3
 from datetime import datetime
 
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.font_manager as fm
@@ -56,6 +57,16 @@ _WD = ["月", "火", "水", "木", "金", "土", "日"]   # weekday() 0..6
 
 # 凡例の表示順
 _LEGEND_ORDER = ["jma_msm", "jma_gsm", "gfs_seamless", "ecmwf_ifs025"]
+
+
+def _temp_color(temp) -> str:
+    """気温 -> 段階的な色  赤/オレンジ/黄/水色/青"""
+    if temp is None:   return "#aaa"
+    if temp >= 30:     return "#E53935"   # 赤
+    if temp >= 20:     return "#FB8C00"   # オレンジ
+    if temp >= 10:     return "#FDD835"   # 黄
+    if temp >= 0:      return "#29B6F6"   # 水色
+    return             "#1565C0"          # 青
 
 
 def _wmo_label(code) -> tuple[str, str]:
@@ -184,8 +195,9 @@ def make_chart(conn, fa: str, path: str) -> None:
 
         # 気温 (y=1.5)
         temp = r["temperature_2m_c"]
+        t_color = _temp_color(temp)
         ax3.text(x, 1.5, f"{temp:.0f}°" if temp is not None else "--",
-                 ha="center", va="center", fontsize=13, color="#e8590c", fontweight="bold")
+                 ha="center", va="center", fontsize=13, color=t_color, fontweight="bold")
 
         # 降水量 (y=0.5)
         precip = r["precipitation_mm"]
