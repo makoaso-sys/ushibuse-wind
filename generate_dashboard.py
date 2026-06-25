@@ -143,8 +143,9 @@ def make_chart(conn, fa: str, path: str) -> None:
         x = _jst_naive(vtiso)
         hour = datetime.fromisoformat(vtiso).astimezone(pc.JST).hour
         ax1.axvline(x, color="#6741d9", ls=":", lw=1.3, alpha=.7)
-        ax1.text(x, ax1.get_ylim()[1] * 0.97, f"{hour:02d}:00", color="#6741d9",
-                 fontsize=8, ha="center", va="top")
+        ax1.text(x, 0.04, f"{hour:02d}:00", color="#6741d9",
+                 fontsize=8, ha="center", va="bottom",
+                 transform=ax1.get_xaxis_transform())
 
     # ── パネル2: 風向矢印 ──────────────────────────────────────
     rows = conn.execute(
