@@ -23,6 +23,8 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
+import urllib.parse
+
 import requests
 
 import phase6_common as pc
@@ -78,7 +80,8 @@ def send_ntfy(server: str, topic: str, title: str, body: str, tags: str,
     url = f"{server}/{topic}"
     try:
         r = requests.post(url, data=body.encode("utf-8"),
-                          headers={"Title": title, "Tags": tags,
+                          headers={"Title": urllib.parse.quote(title),
+                                   "Tags": tags,
                                    "Priority": priority}, timeout=20)
         if r.status_code == 200:
             return True
