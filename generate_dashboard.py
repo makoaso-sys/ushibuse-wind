@@ -166,7 +166,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     # y軸: 3行構成(天気=2.5, 気温=1.5, 降水=0.5)
     ax3.set_ylim(0, 3)
     ax3.set_yticks([0.5, 1.5, 2.5])
-    ax3.set_yticklabels(["降水量\n(mm)", "気温\n(°C)", "天気\n(jma_msm)"], fontsize=7)
+    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気\n(jma_msm)"], fontsize=7)
     ax3.tick_params(axis="y", length=0)
     ax3.axhline(1.0, color="#ddd", lw=0.7)
     ax3.axhline(2.0, color="#ddd", lw=0.7)
@@ -192,7 +192,7 @@ def make_chart(conn, fa: str, path: str) -> None:
 
         # 降水量 (y=0.5)
         precip = r["precipitation_mm"]
-        precip_txt = f"{precip:.1f}" if precip is not None else "--"
+        precip_txt = f"{precip:.1f}" if precip is not None else "--"  # mm/h
         color = "#1565C0" if (precip or 0) > 0 else "#999"
         ax3.text(x, 0.5, precip_txt, ha="center", va="center",
                  fontsize=8, color=color, fontweight="bold" if (precip or 0) > 0 else "normal")
