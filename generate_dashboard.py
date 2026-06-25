@@ -59,13 +59,13 @@ _LEGEND_ORDER = ["jma_msm", "jma_gsm", "gfs_seamless", "ecmwf_ifs025"]
 
 
 def _wmo_label(code) -> tuple[str, str]:
-    """WMO天気コード -> (シンボル, 背景色)  ☀=晴  ☁=曇/霧  ☔=雨/雪/雷"""
+    """WMO天気コード -> (シンボル, 文字色)  ☀=晴  ☁=曇/霧  ☔=雨/雪/雷"""
     if code is None:
-        return "", "#ffffff"
+        return "", "#aaa"
     c = int(code)
-    if c <= 2:  return "☀", "#FFF9C4"   # 快晴・晴れ
-    if c <= 60: return "☁", "#CFD8DC"   # 曇り・霧・霧雨
-    return "☔", "#BBDEFB"               # 雨・雪・驟雨・雷雨
+    if c <= 2:  return "☀", "#E65100"   # 快晴・晴れ (deep orange)
+    if c <= 60: return "☁", "#37474F"   # 曇り・霧・霧雨 (dark blue-grey)
+    return "☔", "#0D47A1"               # 雨・雪・驟雨・雷雨 (dark blue)
 
 
 def _fmt_date(x, pos=None):
@@ -84,7 +84,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     models = [r["model"] for r in conn.execute(
         "SELECT DISTINCT model FROM forecasts WHERE fetched_at=? ORDER BY model", (fa,))]
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 10), sharex=True,
-                                        gridspec_kw={"height_ratios": [3, 1, 2]})
+                                        gridspec_kw={"height_ratios": [3, 0.49, 0.98]})
     colors = {"jma_msm": "#d6336c", "jma_gsm": "#f08c00",
               "ecmwf_ifs025": "#1f5fa5", "gfs_seamless": "#2f9e44"}
 
@@ -151,7 +151,7 @@ def make_chart(conn, fa: str, path: str) -> None:
                    angles="uv", scale_units="inches", scale=2.2, width=0.004,
                    headwidth=4, headlength=5, pivot="mid")
     ax2.set_ylim(-1, 1); ax2.set_yticks([])
-    ax2.set_ylabel("風向\n(jma_msm)", fontsize=9)
+    ax2.set_ylabel("風向\n(jma_msm)", fontsize=11)
     ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上が北）", transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
     ax2.grid(alpha=.2, axis="x")
@@ -166,7 +166,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     # y軸: 3行構成(天気=2.5, 気温=1.5, 降水=0.5)
     ax3.set_ylim(0, 3)
     ax3.set_yticks([0.5, 1.5, 2.5])
-    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気\n(jma_msm)"], fontsize=7)
+    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気\n(jma_msm)"], fontsize=11)
     ax3.tick_params(axis="y", length=0)
     ax3.axhline(1.0, color="#ddd", lw=0.7)
     ax3.axhline(2.0, color="#ddd", lw=0.7)
@@ -178,24 +178,21 @@ def make_chart(conn, fa: str, path: str) -> None:
         x = _jst_naive(r["valid_time"])
 
         # 天気シンボル (y=2.5)
-        label, bg = _wmo_label(r["weather_code"])
+        label, color = _wmo_label(r["weather_code"])
         ax3.text(x, 2.5, label if label else "--", ha="center", va="center",
-                 fontsize=11, color="#333",
-                 fontproperties=_sym_fp,
-                 bbox=dict(boxstyle="round,pad=0.2", facecolor=bg,
-                           edgecolor="none", alpha=0.85))
+                 fontsize=22, color=color, fontproperties=_sym_fp)
 
         # 気温 (y=1.5)
         temp = r["temperature_2m_c"]
         ax3.text(x, 1.5, f"{temp:.0f}°" if temp is not None else "--",
-                 ha="center", va="center", fontsize=8, color="#e8590c", fontweight="bold")
+                 ha="center", va="center", fontsize=13, color="#e8590c", fontweight="bold")
 
         # 降水量 (y=0.5)
         precip = r["precipitation_mm"]
-        precip_txt = f"{precip:.1f}" if precip is not None else "--"  # mm/h
+        precip_txt = f"{precip:.0f}" if precip is not None else "--"  # mm/h
         color = "#1565C0" if (precip or 0) > 0 else "#999"
         ax3.text(x, 0.5, precip_txt, ha="center", va="center",
-                 fontsize=8, color=color, fontweight="bold" if (precip or 0) > 0 else "normal")
+                 fontsize=13, color=color, fontweight="bold" if (precip or 0) > 0 else "normal")
 
     ax3.grid(alpha=.2, axis="x")
     ax3.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
