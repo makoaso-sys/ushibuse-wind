@@ -74,7 +74,7 @@ def _wmo_label(code) -> tuple[str, str]:
     if code is None:
         return "", "#aaa"
     c = int(code)
-    if c <= 2:  return "☀", "#E65100"   # 快晴・晴れ (deep orange)
+    if c <= 1:  return "☀", "#E65100"   # 快晴・晴れ (deep orange)
     if c <= 60: return "☁", "#37474F"   # 曇り・霧・霧雨 (dark blue-grey)
     return "☔", "#0D47A1"               # 雨・雪・驟雨・雷雨 (dark blue)
 
