@@ -18,6 +18,7 @@ PCの電源状態に依存しない。
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import sqlite3
@@ -31,11 +32,16 @@ from matplotlib.font_manager import FontProperties
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
+from matplotlib.offsetbox import AnnotationBbox, DrawingArea
+from matplotlib.patches import Circle as _MplCircle
 import numpy as np
 
 import phase6_common as pc
 
 MAX_LEAD = 48
+
+_LAT = 35.074094   # 牛臥海岸
+_LON = 138.868262
 
 # 日本語フォント: インストール済みのものを優先順に選択
 _available_fonts = {f.name for f in fm.fontManager.ttflist}
@@ -59,6 +65,25 @@ _WD = ["月", "火", "水", "木", "金", "土", "日"]   # weekday() 0..6
 _LEGEND_ORDER = ["jma_msm", "jma_gsm", "gfs_seamless", "ecmwf_ifs025"]
 
 
+def _is_daytime(dt_jst) -> bool:
+    """日の出〜日の入りの間なら True(天文計算、外部ライブラリ不要)。"""
+    n = dt_jst.timetuple().tm_yday
+    decl = math.radians(23.45 * math.sin(math.radians(360 / 365 * (n - 81))))
+    lat_r = math.radians(_LAT)
+    cos_ha = -math.tan(lat_r) * math.tan(decl)
+    cos_ha = max(-1.0, min(1.0, cos_ha))
+    ha = math.degrees(math.acos(cos_ha))          # 日照半角(度)
+    b = math.radians(360 / 365 * (n - 81))
+    eot = (9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)) / 60
+    solar_noon_utc = 12 - _LON / 15 - eot
+    sunrise_utc = solar_noon_utc - ha / 15
+    sunset_utc  = solar_noon_utc + ha / 15
+    utc_h = (dt_jst.hour + dt_jst.minute / 60) - 9   # JST -> UTC
+    if utc_h < 0:
+        utc_h += 24
+    return sunrise_utc <= utc_h <= sunset_utc
+
+
 def _temp_color(temp) -> str:
     """気温 -> 段階的な色  赤/オレンジ/黄/水色/青"""
     if temp is None:   return "#aaa"
@@ -69,12 +94,27 @@ def _temp_color(temp) -> str:
     return             "#1565C0"          # 青
 
 
-def _wmo_label(code) -> tuple[str, str]:
-    """WMO天気コード -> (シンボル, 文字色)  ☀=晴  ☁=曇/霧  ☔=雨/雪/雷"""
+def _draw_crescent(ax, x_date, y_data, color="#FFB300"):
+    """塗りつぶし三日月を2つの円パッチで描画する。"""
+    da = DrawingArea(24, 24, 12, 12)
+    da.add_artist(_MplCircle((0, 0),      9,   color=color, zorder=2))
+    da.add_artist(_MplCircle((-3.5, 1.5), 7.5, color="white", zorder=3))
+    ab = AnnotationBbox(da, (mdates.date2num(x_date), y_data),
+                        xycoords="data", frameon=False, box_alignment=(0.5, 0.5),
+                        zorder=5)
+    ax.add_artist(ab)
+
+
+def _wmo_label(code, daytime: bool = True) -> tuple[str, str]:
+    """WMO天気コード -> (シンボル, 文字色)  ☀/☽=晴  ☁=曇/霧  ☔=雨/雪/雷"""
     if code is None:
         return "", "#aaa"
     c = int(code)
-    if c <= 1:  return "☀", "#E65100"   # 快晴・晴れ (deep orange)
+    if c <= 1:
+        if daytime:
+            return "☀", "#E65100"       # 快晴・晴れ (deep orange)
+        else:
+            return "☽", "#FFB300"       # 夜間晴れ — _draw_crescent で描画
     if c <= 60: return "☁", "#37474F"   # 曇り・霧・霧雨 (dark blue-grey)
     return "☔", "#0D47A1"               # 雨・雪・驟雨・雷雨 (dark blue)
 
@@ -190,9 +230,12 @@ def make_chart(conn, fa: str, path: str) -> None:
         x = _jst_naive(r["valid_time"])
 
         # 天気シンボル (y=2.5)
-        label, color = _wmo_label(r["weather_code"])
-        ax3.text(x, 2.5, label if label else "--", ha="center", va="center",
-                 fontsize=22, color=color, fontproperties=_sym_fp)
+        label, color = _wmo_label(r["weather_code"], daytime=_is_daytime(x))
+        if label == "☽":
+            _draw_crescent(ax3, x, 2.5, color)
+        else:
+            ax3.text(x, 2.5, label if label else "--", ha="center", va="center",
+                     fontsize=22, color=color, fontproperties=_sym_fp)
 
         # 気温 (y=1.5)
         temp = r["temperature_2m_c"]
