@@ -18,6 +18,7 @@ PCの電源状態に依存しない。
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -139,8 +140,20 @@ def make_chart(conn, fa: str, path: str) -> None:
     colors = {"jma_msm": "#d6336c", "jma_gsm": "#f08c00",
               "ecmwf_ifs025": "#1f5fa5", "gfs_seamless": "#2f9e44"}
 
+    # バイアス補正テーブル読み込み (calibration.json があれば適用)
+    _cal_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
+    cal = None
+    if os.path.exists(_cal_path):
+        try:
+            with open(_cal_path, encoding="utf-8") as _f:
+                cal = json.load(_f)
+        except Exception:
+            cal = None
+
     # ── パネル1: 風速 ──────────────────────────────────────────
     t0 = None
+    corrected_by_time: dict = {}
+
     for m in models:
         rows = conn.execute(
             """SELECT valid_time, wind_speed_ms FROM forecasts
@@ -149,11 +162,39 @@ def make_chart(conn, fa: str, path: str) -> None:
         if not rows:
             continue
         t = [_jst_naive(r["valid_time"]) for r in rows]
-        ms = [r["wind_speed_ms"] for r in rows]
+        ms_raw = [r["wind_speed_ms"] for r in rows]
         t0 = t0 or t[0]
-        lw = 2.8 if m == "jma_msm" else 1.5
-        ax1.plot(t, ms, label=m + ("（本命）" if m == "jma_msm" else ""),
-                 color=colors.get(m, "#888"), linewidth=lw, marker="o", markersize=2.5)
+
+        # 時間帯別バイアス補正
+        if cal and m in cal["models"]:
+            hb = cal["models"][m]["hourly_bias"]
+            ob = cal["models"][m]["bias_overall"]
+            wt = cal["models"][m]["weight"]
+            ms = []
+            for ti, v in zip(t, ms_raw):
+                if v is not None:
+                    c = max(0.0, v - hb.get(str(ti.hour), ob))
+                    ms.append(c)
+                    corrected_by_time.setdefault(ti, []).append((wt, c))
+                else:
+                    ms.append(None)
+        else:
+            ms = ms_raw
+
+        lw    = (2.0 if m == "jma_msm" else 1.2) if cal else (2.8 if m == "jma_msm" else 1.5)
+        alpha = 0.65 if cal else 1.0
+        ax1.plot(t, ms, label=m + ("（本命）" if m == "jma_msm" and not cal else ""),
+                 color=colors.get(m, "#888"), linewidth=lw, marker="o",
+                 markersize=2.5, alpha=alpha)
+
+    # 加重アンサンブル線（補正済み）
+    if cal and corrected_by_time:
+        ens_t  = sorted(corrected_by_time.keys())
+        ens_ms = [sum(w * v for w, v in corrected_by_time[ti]) /
+                  sum(w for w, _ in corrected_by_time[ti])
+                  for ti in ens_t]
+        ax1.plot(ens_t, ens_ms, color="#111", lw=2.8, ls="--",
+                 label="加重平均（補正済み）", zorder=6)
 
     ax1.axhspan(pc.SAIL_MIN_MS, pc.SAIL_MAX_MS, color="#2f9e44", alpha=0.08)
     ax1.axhline(pc.SAIL_MIN_MS, color="#2f9e44", ls="--", lw=1, alpha=.6)
@@ -163,15 +204,20 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax1.set_ylabel("風速 (m/s)")
     ax1.set_ylim(0, max(pc.SAIL_MAX_MS + 2, 16))
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
+    cal_note = (f"  補正: {cal['obs_period']['start']}~{cal['obs_period']['end']}"
+                if cal else "")
     ax1.set_title(f"Ushibuse Beach Multi-model Wind Forecast  (issued {_fa.month}/{_fa.day}"
-                  f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST)", fontsize=12)
+                  f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST){cal_note}", fontsize=12)
     ax1.grid(alpha=.25)
 
-    # 凡例を指定順・縦並びで表示
+    # 凡例: 加重平均を先頭に、個別モデルを後ろに
     handles_dict = {line.get_label(): line for line in ax1.get_lines()}
     ordered_handles, ordered_labels = [], []
+    if "加重平均（補正済み）" in handles_dict:
+        ordered_handles.append(handles_dict["加重平均（補正済み）"])
+        ordered_labels.append("加重平均（補正済み）")
     for m in _LEGEND_ORDER:
-        label = m + ("（本命）" if m == "jma_msm" else "")
+        label = m + ("（本命）" if m == "jma_msm" and not cal else "")
         if label in handles_dict:
             ordered_handles.append(handles_dict[label])
             ordered_labels.append(label)
