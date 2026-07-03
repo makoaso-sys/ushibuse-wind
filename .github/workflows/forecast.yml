@@ -2,7 +2,9 @@ name: forecast-dashboard
 
 # クラウド(GitHub)上で定期実行する。あなたのPCの電源状態に依存しない。
 on:
-  workflow_dispatch:           # cron-job.org または Actionsタブから手動実行
+  schedule:
+    - cron: "0 */3 * * *"     # 3時間ごと(UTC)。お好みで変更
+  workflow_dispatch:           # Actionsタブから手動実行も可
 
 permissions:
   contents: write              # 生成物を同じリポジトリに push するため
@@ -30,11 +32,28 @@ jobs:
       - name: 予測を取得 (Open-Meteo -> wind.db)
         run: python collect_forecasts.py
 
+      - name: バイアス補正データをプライベートリポジトリから取得
+        env:
+          TOKEN: ${{ secrets.PRIVATE_WIND_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            curl -fsSL \
+              -H "Authorization: token $TOKEN" \
+              "https://raw.githubusercontent.com/makoaso-sys/wind/main/ushibuse-wind/calibration.json" \
+              -o calibration.json \
+              && echo "calibration.json を取得しました" \
+              || echo "calibration.json の取得に失敗しました（補正なしで実行）"
+          else
+            echo "PRIVATE_WIND_TOKEN が未設定のため補正なしで実行"
+          fi
+
       - name: ダッシュボード生成 (docs/index.html, docs/forecast.png)
         run: python generate_dashboard.py
 
-      - name: 通知
-        run: python notify.py
+      # ── 任意: 走れそうなら ntfy でスマホ通知 ──
+      # Secrets に NTFY_TOPIC を登録し、下のコメントを外す
+      # - name: 通知
+      #   run: python notify.py --topic "${{ secrets.NTFY_TOPIC }}"
 
       - name: コミット & プッシュ
         run: |
@@ -42,10 +61,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A docs wind.db
           git commit -m "update forecast $(date -u +%FT%TZ)" || echo "no changes"
-          for i in 1 2 3; do
-            git pull --rebase -X theirs && git push && exit 0
-            echo "push failed, retrying ($i/3)..."
-            sleep 10
-          done
-          echo "push failed after 3 retries" >&2
-          exit 1
+          git push

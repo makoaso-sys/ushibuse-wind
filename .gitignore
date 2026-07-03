@@ -1,4 +1,5 @@
 README.md
+calibration.json
 wind.db
 __pycache__/
 *.pyc
