@@ -209,42 +209,73 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax2.grid(alpha=.2, axis="x")
 
     # ── パネル3: 天気・気温・降水（テキスト表形式） ──────────────
-    wx_rows = conn.execute(
-        """SELECT valid_time, temperature_2m_c, weather_code, precipitation_mm
-           FROM forecasts
-           WHERE fetched_at=? AND model='jma_msm' AND lead_hours<=?
+
+    # 全モデルのweather_code・降水量を取得（多数決・中央値計算用）
+    all_wx = conn.execute(
+        """SELECT valid_time, weather_code, precipitation_mm FROM forecasts
+           WHERE fetched_at=? AND lead_hours<=?
            ORDER BY valid_time""", (fa, MAX_LEAD)).fetchall()
+
+    # jma_msmの気温（ローカル精度が高い）
+    temp_map = {r["valid_time"]: r["temperature_2m_c"] for r in conn.execute(
+        """SELECT valid_time, temperature_2m_c FROM forecasts
+           WHERE fetched_at=? AND model='jma_msm' AND lead_hours<=?
+           ORDER BY valid_time""", (fa, MAX_LEAD)).fetchall()}
+
+    # valid_time ごとに集約
+    from collections import defaultdict
+    _wx_codes: dict = defaultdict(list)
+    _precip_vals: dict = defaultdict(list)
+    for r in all_wx:
+        if r["weather_code"] is not None:
+            _wx_codes[r["valid_time"]].append(int(r["weather_code"]))
+        if r["precipitation_mm"] is not None:
+            _precip_vals[r["valid_time"]].append(r["precipitation_mm"])
+    valid_times = sorted(set(r["valid_time"] for r in all_wx))
 
     # y軸: 3行構成(天気=2.5, 気温=1.5, 降水=0.5)
     ax3.set_ylim(0, 3)
     ax3.set_yticks([0.5, 1.5, 2.5])
-    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気\n(jma_msm)"], fontsize=11)
+    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気\n(4モデル)"], fontsize=11)
     ax3.tick_params(axis="y", length=0)
     ax3.axhline(1.0, color="#ddd", lw=0.7)
     ax3.axhline(2.0, color="#ddd", lw=0.7)
 
     step = 3
-    for i, r in enumerate(wx_rows):
+    for i, vt in enumerate(valid_times):
         if i % step != 0:
             continue
-        x = _jst_naive(r["valid_time"])
+        x = _jst_naive(vt)
 
-        # 天気シンボル (y=2.5)
-        label, color = _wmo_label(r["weather_code"], daytime=_is_daytime(x))
+        # 天気シンボル: 4モデル多数決 (y=2.5)
+        codes = _wx_codes.get(vt, [])
+        n = len(codes)
+        n_sunny = sum(1 for c in codes if c <= 1)
+        n_rainy = sum(1 for c in codes if c >= 61)
+        if n >= 2 and n_sunny * 2 >= n:
+            vote_code = 0    # 晴れ多数
+        elif n >= 2 and n_rainy * 2 >= n:
+            vote_code = 99   # 雨多数
+        elif n > 0:
+            vote_code = 3    # 曇り
+        else:
+            vote_code = None
+        label, color = _wmo_label(vote_code, daytime=_is_daytime(x))
         if label == "☽":
             _draw_crescent(ax3, x, 2.5, color)
         else:
             ax3.text(x, 2.5, label if label else "--", ha="center", va="center",
                      fontsize=22, color=color, fontproperties=_sym_fp)
 
-        # 気温 (y=1.5)
-        temp = r["temperature_2m_c"]
+        # 気温 (jma_msm、y=1.5)
+        temp = temp_map.get(vt)
         t_color = _temp_color(temp)
         ax3.text(x, 1.5, f"{temp:.0f}°" if temp is not None else "--",
                  ha="center", va="center", fontsize=13, color=t_color, fontweight="bold")
 
-        # 降水量 (y=0.5) — 四捨五入後の値で色を決定
-        precip = r["precipitation_mm"]
+        # 降水量: 4モデル中央値 (y=0.5) — 四捨五入後の値で色を決定
+        pvals = _precip_vals.get(vt, [])
+        precip = float(np.median(pvals)) if pvals else None
         precip_int = round(precip) if precip is not None else None
         precip_txt = str(precip_int) if precip_int is not None else "--"
         color = "#1565C0" if (precip_int or 0) > 0 else "#999"
