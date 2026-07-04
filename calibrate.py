@@ -86,13 +86,13 @@ def calibrate(obs_path: str, db_path: str = DB_PATH, out_path: str = OUT_PATH) -
         bias  = float(spd_err.mean())
 
         # 風向バイアス (欠損除く)
+        g = g.copy()
+        g["hour_jst"] = ((g["valid_time"] + pd.Timedelta(hours=9)).dt.hour)
         valid_dir = g.dropna(subset=["wind_dir_deg", "obs_dir"])
         dir_bias = float(circ_diff(valid_dir["wind_dir_deg"], valid_dir["obs_dir"]).mean()) \
                    if len(valid_dir) else 0.0
 
-        # JST 時間帯別バイアス
-        g = g.copy()
-        g["hour_jst"] = ((g["valid_time"] + pd.Timedelta(hours=9)).dt.hour)
+        # JST 時間帯別風速バイアス
         hourly_bias: dict[str, float] = {}
         hourly_n:    dict[str, int]   = {}
         for h, hg in g.groupby("hour_jst"):
@@ -100,13 +100,20 @@ def calibrate(obs_path: str, db_path: str = DB_PATH, out_path: str = OUT_PATH) -
             hourly_bias[str(int(h))] = round(float(he.mean()), 4)
             hourly_n[str(int(h))]    = int(len(he))
 
+        # JST 時間帯別風向バイアス
+        hourly_dir_bias: dict[str, float] = {}
+        for h, hg in valid_dir.groupby("hour_jst"):
+            hd = circ_diff(hg["wind_dir_deg"], hg["obs_dir"])
+            hourly_dir_bias[str(int(h))] = round(float(hd.mean()), 2)
+
         result["models"][model] = {
-            "rmse":         round(rmse, 4),
-            "mae":          round(mae,  4),
-            "bias_overall": round(bias, 4),
-            "dir_bias":     round(dir_bias, 2),
-            "hourly_bias":  hourly_bias,
-            "hourly_n":     hourly_n,
+            "rmse":             round(rmse, 4),
+            "mae":              round(mae,  4),
+            "bias_overall":     round(bias, 4),
+            "dir_bias":         round(dir_bias, 2),
+            "hourly_bias":      hourly_bias,
+            "hourly_dir_bias":  hourly_dir_bias,
+            "hourly_n":         hourly_n,
         }
         print(f"  {model:20s}: bias={bias:+.3f} m/s  RMSE={rmse:.3f}  dir_bias={dir_bias:+.1f}°")
 

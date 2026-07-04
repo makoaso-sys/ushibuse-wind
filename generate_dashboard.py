@@ -265,23 +265,47 @@ def make_chart(conn, fa: str, path: str) -> None:
                  fontsize=8, ha="center", va="bottom",
                  transform=ax1.get_xaxis_transform())
 
-    # ── パネル2: 風向矢印 ──────────────────────────────────────
-    rows = conn.execute(
-        """SELECT valid_time, wind_u, wind_v FROM forecasts
-           WHERE fetched_at=? AND model='jma_msm' AND lead_hours<=?
-           ORDER BY valid_time""", (fa, MAX_LEAD)).fetchall()
-    if rows:
+    # ── パネル2: 風向矢印（補正済み加重平均） ─────────────────────
+    dir_by_time: dict = {}
+    _n_models = max(len(models), 1)
+    for m in models:
+        drows = conn.execute(
+            """SELECT valid_time, wind_u, wind_v FROM forecasts
+               WHERE fetched_at=? AND model=? AND lead_hours<=? AND wind_u IS NOT NULL
+               ORDER BY valid_time""", (fa, m, MAX_LEAD)).fetchall()
+        if not drows:
+            continue
+        wt = cal["models"][m]["weight"] if cal and m in cal["models"] else 1.0 / _n_models
+        for r in drows:
+            ti = _jst_naive(r["valid_time"])
+            u_r, v_r = r["wind_u"], r["wind_v"]
+            if cal and m in cal["models"]:
+                hdb = cal["models"][m].get("hourly_dir_bias", {})
+                bias_deg = hdb.get(str(ti.hour), cal["models"][m]["dir_bias"])
+                bias_rad = math.radians(bias_deg)
+                u_r = r["wind_u"] * math.cos(-bias_rad) - r["wind_v"] * math.sin(-bias_rad)
+                v_r = r["wind_u"] * math.sin(-bias_rad) + r["wind_v"] * math.cos(-bias_rad)
+            dir_by_time.setdefault(ti, []).append((wt, u_r, v_r))
+    if dir_by_time:
         step = 3
-        t = [_jst_naive(r["valid_time"]) for r in rows][::step]
-        u = np.array([r["wind_u"] for r in rows][::step], dtype=float)
-        v = np.array([r["wind_v"] for r in rows][::step], dtype=float)
-        mag = np.hypot(u, v); mag[mag == 0] = 1.0
+        dt_all = sorted(dir_by_time.keys())
+        dt_s = dt_all[::step]
+        avg_u, avg_v = [], []
+        for ti in dt_s:
+            entries = dir_by_time[ti]
+            w_tot = sum(w for w, _, _ in entries)
+            avg_u.append(sum(w * u for w, u, _ in entries) / w_tot)
+            avg_v.append(sum(w * v for w, _, v in entries) / w_tot)
+        u_arr = np.array(avg_u, dtype=float)
+        v_arr = np.array(avg_v, dtype=float)
+        mag = np.hypot(u_arr, v_arr); mag[mag == 0] = 1.0
         ax2.axhline(0, color="#ccc", lw=0.8)
-        ax2.quiver(t, np.zeros(len(t)), u / mag, v / mag, color="#1f5fa5",
+        ax2.quiver(dt_s, np.zeros(len(dt_s)), u_arr / mag, v_arr / mag, color="#1f5fa5",
                    angles="uv", scale_units="inches", scale=2.2, width=0.004,
                    headwidth=4, headlength=5, pivot="mid")
     ax2.set_ylim(-1, 1); ax2.set_yticks([])
-    ax2.set_ylabel("風向\n(jma_msm)", fontsize=11)
+    dir_label = "風向\n(加重平均補正済)" if cal else "風向\n(全モデル平均)"
+    ax2.set_ylabel(dir_label, fontsize=11)
     ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上が北）", transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
     ax2.grid(alpha=.2, axis="x")
@@ -423,34 +447,53 @@ def make_html(conn, fa: str, path: str) -> None:
         if not ev:
             continue
 
-        # 加重平均風速を計算（補正データがあれば補正済み、なければ単純平均）
+        # 補正済み加重平均: 風速・風向を同時に計算
         if cal:
             rows = conn.execute(
-                """SELECT model, wind_speed_ms, valid_time FROM forecasts
+                """SELECT model, wind_speed_ms, wind_u, wind_v, valid_time FROM forecasts
                    WHERE fetched_at=? AND valid_time=? ORDER BY model""",
                 (fa, vt_iso)).fetchall()
-            w_sum = 0.0; w_tot = 0.0
+            ws_sum = wd_wu = wd_wv = w_tot = 0.0
             for r in rows:
-                m = r["model"]; v = r["wind_speed_ms"]
-                if v is None or m not in cal["models"]:
+                m = r["model"]
+                if m not in cal["models"]:
                     continue
                 vt_jst = datetime.fromisoformat(r["valid_time"]).astimezone(pc.JST)
-                hb = cal["models"][m]["hourly_bias"]
-                ob = cal["models"][m]["bias_overall"]
                 wt = cal["models"][m]["weight"]
-                c = max(0.0, v - hb.get(str(vt_jst.hour), ob))
-                w_sum += wt * c; w_tot += wt
-            speed = round(w_sum / w_tot, 1) if w_tot > 0 else ev["mean_speed_ms"]
+                # 風速補正
+                spd = r["wind_speed_ms"]
+                if spd is not None:
+                    hb = cal["models"][m]["hourly_bias"]
+                    ob = cal["models"][m]["bias_overall"]
+                    ws_sum += wt * max(0.0, spd - hb.get(str(vt_jst.hour), ob))
+                # 風向補正（ベクトル回転）
+                if r["wind_u"] is not None:
+                    hdb = cal["models"][m].get("hourly_dir_bias", {})
+                    bias_rad = math.radians(hdb.get(str(vt_jst.hour),
+                                                     cal["models"][m]["dir_bias"]))
+                    u_c = r["wind_u"] * math.cos(-bias_rad) - r["wind_v"] * math.sin(-bias_rad)
+                    v_c = r["wind_u"] * math.sin(-bias_rad) + r["wind_v"] * math.cos(-bias_rad)
+                    wd_wu += wt * u_c; wd_wv += wt * v_c
+                w_tot += wt
+            speed = round(ws_sum / w_tot, 1) if w_tot > 0 else ev["mean_speed_ms"]
+            if w_tot > 0 and (wd_wu != 0 or wd_wv != 0):
+                _, mean_dir = pc.uv_to_speed_dir(wd_wu / w_tot, wd_wv / w_tot)
+                mean_compass = pc.compass16(mean_dir)
+            else:
+                mean_dir = ev["mean_dir_deg"]
+                mean_compass = ev["mean_compass"]
         else:
             speed = ev["mean_speed_ms"]
+            mean_dir = ev["mean_dir_deg"]
+            mean_compass = ev["mean_compass"]
 
         sailable = (pc.SAIL_MIN_MS <= speed <= pc.SAIL_MAX_MS and
-                    pc.dir_in_arcs(ev["mean_dir_deg"]))
+                    pc.dir_in_arcs(mean_dir))
         vt = ev["valid_time_jst"]
         when = vt.strftime(f"%-m/%-d({_WD[vt.weekday()]}) %H:%M") if vt else "-"
         cards.append(CARD.format(
             when=when, speed=speed,
-            compass=ev["mean_compass"], deg=ev["mean_dir_deg"],
+            compass=mean_compass, deg=round(mean_dir),
             cls="ok" if sailable else "no",
             verdict="✅ 出走可" if sailable else "⚠️ 見送り"))
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
