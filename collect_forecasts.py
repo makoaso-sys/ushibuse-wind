@@ -58,6 +58,7 @@ MODELS = [
 HOURLY_VARS = [
     "wind_speed_10m",
     "wind_direction_10m",
+    "wind_gusts_10m",
     "surface_pressure",
     "temperature_2m",
     "weather_code",
@@ -104,6 +105,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
     weather_code         INTEGER,
     precipitation_prob   REAL,
     precipitation_mm     REAL,
+    wind_gusts_ms        REAL,
     latitude             REAL,
     longitude            REAL,
     UNIQUE(model, fetched_at, valid_time)
@@ -117,6 +119,7 @@ _MIGRATIONS = [
     "ALTER TABLE forecasts ADD COLUMN weather_code INTEGER",
     "ALTER TABLE forecasts ADD COLUMN precipitation_prob REAL",
     "ALTER TABLE forecasts ADD COLUMN precipitation_mm REAL",
+    "ALTER TABLE forecasts ADD COLUMN wind_gusts_ms REAL",
 ]
 
 INSERT_SQL = """
@@ -125,13 +128,13 @@ INSERT OR IGNORE INTO forecasts
      wind_speed_ms, wind_dir_deg, wind_u, wind_v,
      surface_pressure_hpa, temperature_2m_c,
      weather_code, precipitation_prob, precipitation_mm,
-     latitude, longitude)
+     wind_gusts_ms, latitude, longitude)
 VALUES
     (:model, :fetched_at, :valid_time, :lead_hours,
      :wind_speed_ms, :wind_dir_deg, :wind_u, :wind_v,
      :surface_pressure_hpa, :temperature_2m_c,
      :weather_code, :precipitation_prob, :precipitation_mm,
-     :latitude, :longitude)
+     :wind_gusts_ms, :latitude, :longitude)
 """
 
 
@@ -172,6 +175,7 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     times = hourly.get("time") or []
     speed = hourly.get("wind_speed_10m") or []
     wdir = hourly.get("wind_direction_10m") or []
+    gusts = hourly.get("wind_gusts_10m") or []
     pres = hourly.get("surface_pressure") or []
     temp = hourly.get("temperature_2m") or []
     wcode = hourly.get("weather_code") or []
@@ -203,6 +207,7 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
             "weather_code": _get(wcode, i),
             "precipitation_prob": _get(prob, i),
             "precipitation_mm": _get(precip, i),
+            "wind_gusts_ms": _get(gusts, i),
             "latitude": payload.get("latitude", LATITUDE),
             "longitude": payload.get("longitude", LONGITUDE),
         })
