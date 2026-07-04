@@ -192,6 +192,7 @@ def make_chart(conn, fa: str, path: str) -> None:
                  markersize=2.5, alpha=alpha)
 
     # 加重アンサンブル線（補正済み）
+    ens_t, ens_ms = [], []
     if cal and corrected_by_time:
         ens_t  = sorted(corrected_by_time.keys())
         ens_ms = [sum(w * v for w, v in corrected_by_time[ti]) /
@@ -199,6 +200,33 @@ def make_chart(conn, fa: str, path: str) -> None:
                   for ti in ens_t]
         ax1.plot(ens_t, ens_ms, color="#111", lw=2.8, ls="--",
                  label="加重平均（補正済み）", zorder=6)
+
+    # 突風の加重平均
+    gust_by_time: dict = {}
+    n_models = max(len(models), 1)
+    for m in models:
+        grows = conn.execute(
+            """SELECT valid_time, wind_gusts_ms FROM forecasts
+               WHERE fetched_at=? AND model=? AND lead_hours<=? AND wind_gusts_ms IS NOT NULL
+               ORDER BY valid_time""", (fa, m, MAX_LEAD)).fetchall()
+        if not grows:
+            continue
+        wt = cal["models"][m]["weight"] if cal and m in cal["models"] else 1.0 / n_models
+        for r in grows:
+            ti = _jst_naive(r["valid_time"])
+            gust_by_time.setdefault(ti, []).append((wt, r["wind_gusts_ms"]))
+    if gust_by_time:
+        gt = sorted(gust_by_time.keys())
+        gms = [sum(w * v for w, v in gust_by_time[ti]) /
+               sum(w for w, _ in gust_by_time[ti]) for ti in gt]
+        ax1.plot(gt, gms, color="#e8590c", lw=1.5, ls=":", label="突風Gust(加重平均)", zorder=5)
+        # 風速と突風の間を塗りつぶし
+        if ens_t:
+            ct = [ti for ti in ens_t if ti in gust_by_time]
+            ew = [ens_ms[ens_t.index(ti)] for ti in ct]
+            gw = [sum(w * v for w, v in gust_by_time[ti]) /
+                  sum(w for w, _ in gust_by_time[ti]) for ti in ct]
+            ax1.fill_between(ct, ew, gw, alpha=0.10, color="#e8590c")
 
     ax1.axhspan(pc.SAIL_MIN_MS, pc.SAIL_MAX_MS, color="#2f9e44", alpha=0.08)
     ax1.axhline(pc.SAIL_MIN_MS, color="#2f9e44", ls="--", lw=1, alpha=.6)
@@ -217,9 +245,10 @@ def make_chart(conn, fa: str, path: str) -> None:
     # 凡例: 加重平均を先頭に、個別モデルを後ろに
     handles_dict = {line.get_label(): line for line in ax1.get_lines()}
     ordered_handles, ordered_labels = [], []
-    if "加重平均（補正済み）" in handles_dict:
-        ordered_handles.append(handles_dict["加重平均（補正済み）"])
-        ordered_labels.append("加重平均（補正済み）")
+    for lbl in ["加重平均（補正済み）", "突風Gust(加重平均)"]:
+        if lbl in handles_dict:
+            ordered_handles.append(handles_dict[lbl])
+            ordered_labels.append(lbl)
     for m in _LEGEND_ORDER:
         if m in handles_dict:
             ordered_handles.append(handles_dict[m])
