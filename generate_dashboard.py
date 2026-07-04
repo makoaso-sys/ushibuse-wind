@@ -23,7 +23,7 @@ import math
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 import matplotlib
@@ -61,6 +61,42 @@ for _fn in ("DejaVu Sans", "Apple Symbols"):
         break
 
 _WD = ["月", "火", "水", "木", "金", "土", "日"]   # weekday() 0..6
+
+# ── 田子の浦港 調和定数 (JCG 公開値ベース) ──────────────────────────
+# 速度: °/h, H: m, g: phase lag (deg, Greenwich) — 外部APIなし・永続利用可
+_TIDE_Z0 = 1.15          # 基準面上の平均水面 (m)
+_TIDE_T0_JST = datetime(2000, 1, 1, 9, 0, 0)   # J2000 UTC を JST naive に換算
+_TIDE_CONSTS = [
+    ("M2", 28.984104, 0.577, 178.6),
+    ("S2", 30.000000, 0.238, 199.1),
+    ("N2", 28.439730, 0.124, 158.4),
+    ("K1", 15.041069, 0.141, 221.6),
+    ("O1", 13.943036, 0.103, 192.5),
+    ("M4", 57.968208, 0.040, 320.0),
+]
+
+
+def _predict_tide_cm(dt_jst_naive_arr):
+    """JST naive datetime の配列から潮位 (cm, 基準面からの高さ) を返す numpy 配列。"""
+    h = np.full(len(dt_jst_naive_arr), _TIDE_Z0 * 100.0)
+    for _, speed, H, g in _TIDE_CONSTS:
+        for i, dt in enumerate(dt_jst_naive_arr):
+            t_h = (dt - _TIDE_T0_JST).total_seconds() / 3600.0
+            h[i] += H * 100.0 * math.cos(math.radians(speed * t_h - g))
+    return h
+
+
+def _tide_peaks(h, order=30):
+    """潮位配列から極大(満潮)・極小(干潮)のインデックスを返す。order=30 → ±300分窓。"""
+    hi, lo = [], []
+    n = len(h)
+    for i in range(order, n - order):
+        seg = h[i - order: i + order + 1]
+        if h[i] == seg.max():
+            hi.append(i)
+        if h[i] == seg.min():
+            lo.append(i)
+    return hi, lo
 
 # 凡例の表示順
 _LEGEND_ORDER = ["jma_msm", "jma_gsm", "gfs_seamless", "ecmwf_ifs025"]
@@ -147,8 +183,8 @@ def _load_cal() -> dict | None:
 def make_chart(conn, fa: str, path: str) -> None:
     models = [r["model"] for r in conn.execute(
         "SELECT DISTINCT model FROM forecasts WHERE fetched_at=? ORDER BY model", (fa,))]
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 10), sharex=True,
-                                        gridspec_kw={"height_ratios": [3, 0.49, 0.98]})
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(9, 10.8), sharex=True,
+                                             gridspec_kw={"height_ratios": [3, 0.49, 0.98, 0.82]})
     colors = {"jma_msm": "#d6336c", "jma_gsm": "#f08c00",
               "ecmwf_ifs025": "#1f5fa5", "gfs_seamless": "#2f9e44"}
 
@@ -236,10 +272,8 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax1.set_ylabel("風速 (m/s)")
     ax1.set_ylim(0, max(pc.SAIL_MAX_MS + 2, 16))
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
-    cal_note = (f"  補正: {cal['obs_period']['start']}~{cal['obs_period']['end']}"
-                if cal else "")
     ax1.set_title(f"Ushibuse Beach Multi-model Wind Forecast  (issued {_fa.month}/{_fa.day}"
-                  f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST){cal_note}", fontsize=12)
+                  f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST)", fontsize=12)
     ax1.grid(alpha=.25)
 
     # 凡例: 加重平均を先頭に、個別モデルを後ろに
@@ -304,7 +338,7 @@ def make_chart(conn, fa: str, path: str) -> None:
                    angles="uv", scale_units="inches", scale=2.2, width=0.004,
                    headwidth=4, headlength=5, pivot="mid")
     ax2.set_ylim(-1, 1); ax2.set_yticks([])
-    dir_label = "風向\n(加重平均補正済)" if cal else "風向\n(全モデル平均)"
+    dir_label = "風向"
     ax2.set_ylabel(dir_label, fontsize=11)
     ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上が北）", transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
@@ -338,7 +372,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     # y軸: 3行構成(天気=2.5, 気温=1.5, 降水=0.5)
     ax3.set_ylim(0, 3)
     ax3.set_yticks([0.5, 1.5, 2.5])
-    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気\n(4モデル)"], fontsize=11)
+    ax3.set_yticklabels(["降水量\n(mm/h)", "気温\n(°C)", "天気"], fontsize=11)
     ax3.tick_params(axis="y", length=0)
     ax3.axhline(1.0, color="#ddd", lw=0.7)
     ax3.axhline(2.0, color="#ddd", lw=0.7)
@@ -385,7 +419,30 @@ def make_chart(conn, fa: str, path: str) -> None:
                  fontsize=13, color=color, fontweight="bold" if (precip_int or 0) > 0 else "normal")
 
     ax3.grid(alpha=.2, axis="x")
-    ax3.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
+
+    # ── パネル4: 潮位（田子の浦港 調和定数による計算値） ───────────────
+    t_tide_start = t0 if t0 is not None else datetime.now()
+    n_tide = MAX_LEAD * 6 + 1                     # 10分刻み × 48h
+    dt_tide = [t_tide_start + timedelta(minutes=10 * i) for i in range(n_tide)]
+    h_tide  = _predict_tide_cm(dt_tide)
+    ax4.plot(dt_tide, h_tide, color="#1565C0", lw=1.8, zorder=3)
+    ax4.fill_between(dt_tide, 0, h_tide, alpha=0.15, color="#1565C0", zorder=2)
+    hi_idx, lo_idx = _tide_peaks(h_tide, order=30)
+    for idx in hi_idx:
+        dt, hv = dt_tide[idx], h_tide[idx]
+        ax4.annotate(f"満 {hv:.0f}cm\n{dt:%H:%M}",
+                     xy=(dt, hv), xytext=(0, 2), textcoords="offset points",
+                     ha="center", fontsize=7, color="#C62828", fontweight="bold")
+    for idx in lo_idx:
+        dt, hv = dt_tide[idx], h_tide[idx]
+        ax4.annotate(f"干 {hv:.0f}cm\n{dt:%H:%M}",
+                     xy=(dt, hv), xytext=(0, -16), textcoords="offset points",
+                     ha="center", fontsize=7, color="#1565C0", fontweight="bold",
+                     annotation_clip=False)
+    ax4.set_ylim(0, 280)
+    ax4.set_ylabel("潮位 (cm)", fontsize=10)
+    ax4.grid(alpha=0.2, axis="x")
+    ax4.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
 
     plt.tight_layout()
     plt.savefig(path, dpi=110)
