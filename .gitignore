@@ -1,5 +1,7 @@
 README.md
 calibration.json
 wind.db
+observations.db
+fetch_weathercloud.py
 __pycache__/
 *.pyc

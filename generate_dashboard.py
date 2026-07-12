@@ -23,7 +23,7 @@ import math
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 import matplotlib
@@ -177,6 +177,36 @@ def _load_cal() -> dict | None:
     return None
 
 
+def _load_obs(fa_iso: str, hours: int = 12) -> list | None:
+    """observations.db から作成時刻(fa)の直近 hours 時間の計測値を返す。
+
+    戻り値: [(t_jst, speed_ms, gust_ms, dir_deg, temp_c), ...]  無ければ None。
+    観測DBは Private のみに存在するため、なければ黙ってスキップする(公開側で安全)。
+    """
+    obs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "observations.db")
+    if not os.path.exists(obs_path):
+        return None
+    try:
+        fa_utc = datetime.fromisoformat(fa_iso).astimezone(timezone.utc).replace(tzinfo=None)
+        start = (fa_utc - timedelta(hours=hours)).isoformat()
+        end = fa_utc.isoformat()
+        oc = sqlite3.connect(obs_path)
+        oc.row_factory = sqlite3.Row
+        rows = oc.execute(
+            """SELECT valid_time, wind_speed_ms, wind_dir_deg, wind_gust_ms, temp_c
+               FROM observations WHERE valid_time BETWEEN ? AND ?
+               ORDER BY valid_time""", (start, end)).fetchall()
+        oc.close()
+    except Exception:
+        return None
+    out = []
+    for r in rows:
+        t_jst = datetime.fromisoformat(r["valid_time"]) + timedelta(hours=9)  # UTC->JST naive
+        out.append((t_jst, r["wind_speed_ms"], r["wind_gust_ms"],
+                    r["wind_dir_deg"], r["temp_c"]))
+    return out or None
+
+
 # ============================================================
 # チャート生成
 # ============================================================
@@ -189,6 +219,7 @@ def make_chart(conn, fa: str, path: str) -> None:
               "ecmwf_ifs025": "#1f5fa5", "gfs_seamless": "#2f9e44"}
 
     cal = _load_cal()
+    obs = _load_obs(fa)          # 直近12hの計測値(なければ None)
 
     # ── パネル1: 風速 ──────────────────────────────────────────
     t0 = None
@@ -264,6 +295,24 @@ def make_chart(conn, fa: str, path: str) -> None:
                   sum(w for w, _ in gust_by_time[ti]) for ti in ct]
             ax1.fill_between(ct, ew, gw, alpha=0.10, color="#e8590c")
 
+    # ── 実測(計測)風速・突風: 作成時刻の直近12h ──
+    if obs:
+        # 実測 風速と突風の間を薄い灰色で塗る(両方そろう時刻のみ)
+        both = [(o[0], o[1], o[2]) for o in obs if o[1] is not None and o[2] is not None]
+        if both:
+            ax1.fill_between([p[0] for p in both], [p[1] for p in both],
+                             [p[2] for p in both], color="#888", alpha=0.18, zorder=5)
+        # 実測 突風: 予測突風と同じ点線・濃い灰色
+        og = [(o[0], o[2]) for o in obs if o[2] is not None]
+        if og:
+            ax1.plot([p[0] for p in og], [p[1] for p in og], color="#555",
+                     lw=1.5, ls=":", label="実測 突風", zorder=7)
+        # 実測 風速: 細い濃い灰色の実線(マーカーなし)
+        os_ = [(o[0], o[1]) for o in obs if o[1] is not None]
+        if os_:
+            ax1.plot([p[0] for p in os_], [p[1] for p in os_], color="#555",
+                     lw=1.4, label="実測 風速", zorder=8)
+
     ax1.axhspan(pc.SAIL_MIN_MS, pc.SAIL_MAX_MS, color="#2f9e44", alpha=0.08)
     ax1.axhline(pc.SAIL_MIN_MS, color="#2f9e44", ls="--", lw=1, alpha=.6)
     ax1.axhline(pc.SAIL_MAX_MS, color="#e8590c", ls="--", lw=1, alpha=.6)
@@ -279,7 +328,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     # 凡例: 加重平均を先頭に、個別モデルを後ろに
     handles_dict = {line.get_label(): line for line in ax1.get_lines()}
     ordered_handles, ordered_labels = [], []
-    for lbl in ["加重平均（補正済み）", "突風Gust(加重平均)"]:
+    for lbl in ["実測 風速", "実測 突風", "加重平均（補正済み）", "突風Gust(加重平均)"]:
         if lbl in handles_dict:
             ordered_handles.append(handles_dict[lbl])
             ordered_labels.append(lbl)
@@ -337,10 +386,28 @@ def make_chart(conn, fa: str, path: str) -> None:
         ax2.quiver(dt_s, np.zeros(len(dt_s)), u_arr / mag, v_arr / mag, color="#1f5fa5",
                    angles="uv", scale_units="inches", scale=2.2, width=0.004,
                    headwidth=4, headlength=5, pivot="mid")
+    else:
+        ax2.axhline(0, color="#ccc", lw=0.8)
+
+    # ── 実測(計測)風向: 作成時刻の直近12h(黒い矢印) ──
+    if obs:
+        od = [(o[0], o[3], o[1]) for o in obs if o[3] is not None and o[1] is not None]
+        od = od[::3]          # 予測(気温)と同じ3時間おきに間引く
+        if od:
+            odt = [x[0] for x in od]
+            ou = np.array([-s * math.sin(math.radians(d)) for _, d, s in od], dtype=float)
+            ov = np.array([-s * math.cos(math.radians(d)) for _, d, s in od], dtype=float)
+            omag = np.hypot(ou, ov); omag[omag == 0] = 1.0
+            ax2.quiver(odt, np.zeros(len(odt)), ou / omag, ov / omag, color="#555",
+                       angles="uv", scale_units="inches", scale=2.2, width=0.004,
+                       headwidth=4, headlength=5, pivot="mid", zorder=6)
     ax2.set_ylim(-1, 1); ax2.set_yticks([])
     dir_label = "風向"
     ax2.set_ylabel(dir_label, fontsize=11)
-    ax2.text(0.005, 0.97, "矢印 = 風の進む向き（上が北）", transform=ax2.transAxes,
+    _dir_note = "矢印 = 風の進む向き（上が北）"
+    if obs:
+        _dir_note += " ／ 灰=実測(直近12h) 青=予測"
+    ax2.text(0.005, 0.97, _dir_note, transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
     ax2.grid(alpha=.2, axis="x")
 
@@ -418,11 +485,22 @@ def make_chart(conn, fa: str, path: str) -> None:
         ax3.text(x, 0.5, precip_txt, ha="center", va="center",
                  fontsize=13, color=color, fontweight="bold" if (precip_int or 0) > 0 else "normal")
 
+    # 実測気温(直近12h)を黒字で気温行(y=1.5)に重ねる。予測と同じ3時間おきに間引く。
+    if obs:
+        for o in obs[::3]:
+            temp = o[4]
+            if temp is None:
+                continue
+            ax3.text(o[0], 1.5, f"{temp:.0f}°", ha="center", va="center",
+                     fontsize=13, color="#666", fontweight="bold")
+
     ax3.grid(alpha=.2, axis="x")
 
     # ── パネル4: 潮位（田子の浦港 調和定数による計算値） ───────────────
-    t_tide_start = t0 if t0 is not None else datetime.now()
-    n_tide = MAX_LEAD * 6 + 1                     # 10分刻み × 48h
+    _t0 = t0 if t0 is not None else datetime.now()
+    t_tide_start = min(_t0, obs[0][0]) if obs else _t0     # 実測分だけ左に延長
+    t_tide_end = _t0 + timedelta(hours=MAX_LEAD)
+    n_tide = int((t_tide_end - t_tide_start).total_seconds() // 600) + 1   # 10分刻み
     dt_tide = [t_tide_start + timedelta(minutes=10 * i) for i in range(n_tide)]
     h_tide  = _predict_tide_cm(dt_tide)
     ax4.plot(dt_tide, h_tide, color="#1565C0", lw=1.8, zorder=3)

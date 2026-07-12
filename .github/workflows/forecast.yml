@@ -45,6 +45,21 @@ jobs:
             echo "PRIVATE_WIND_TOKEN が未設定のため補正なしで実行"
           fi
 
+      - name: 観測データをプライベートリポジトリから取得 (実測オーバーレイ用)
+        env:
+          TOKEN: ${{ secrets.PRIVATE_WIND_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            curl -fsSL \
+              -H "Authorization: token $TOKEN" \
+              "https://raw.githubusercontent.com/makoaso-sys/wind/main/ushibuse-wind/observations.db" \
+              -o observations.db \
+              && echo "observations.db を取得しました（直近12hの実測を重ねる）" \
+              || echo "observations.db の取得に失敗しました（実測オーバーレイなしで実行）"
+          else
+            echo "PRIVATE_WIND_TOKEN が未設定のため実測オーバーレイなしで実行"
+          fi
+
       - name: ダッシュボード生成 (docs/index.html, docs/forecast.png)
         run: python generate_dashboard.py
 
