@@ -67,6 +67,8 @@ HOURLY_VARS = [
 ]
 
 FORECAST_DAYS = 3          # 12〜24h をカバーするのに十分(MSM の地平線にも収まる)
+PAST_DAYS = 1              # 過去分も取得し、実測(直近12h)と予測を現在時刻で連続にする
+PAST_KEEP_HOURS = 13       # 表示用に残す過去hourの範囲(実測窓12h+余裕)。これ以前は捨てる
 WIND_SPEED_UNIT = "ms"     # m/s で取得(u/v 計算が素直。1kt = 0.514 m/s)
 DB_PATH = "wind.db"
 API_URL = "https://api.open-meteo.com/v1/forecast"
@@ -170,7 +172,7 @@ def _get(seq, i):
 
 
 def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]:
-    """Open-Meteo の単一モデル応答を行リストに変換する(lead>=0 のみ)。"""
+    """Open-Meteo の単一モデル応答を行リストに変換する(直近の過去hourも表示用に保持)。"""
     hourly = payload.get("hourly") or {}
     times = hourly.get("time") or []
     speed = hourly.get("wind_speed_10m") or []
@@ -186,7 +188,9 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     for i, t in enumerate(times):
         vt = parse_utc(t)
         lead = (vt - fetched_at).total_seconds() / 3600.0
-        if lead < 0:                      # 過去時刻は捨てる(将来予測のみ蓄積)
+        # 直近の過去hour(実測との連続表示用)だけ残し、それ以前は捨てる。
+        # lead<0 は「後追い(ナウキャスト相当)」なので、補正は calibrate 側で lead>=0 に限定する。
+        if lead < -PAST_KEEP_HOURS:
             continue
         sp = _get(speed, i)
         di = _get(wdir, i)
@@ -223,6 +227,7 @@ def fetch_model(model: str, fetched_at: datetime,
         "hourly": ",".join(HOURLY_VARS),
         "models": model,
         "forecast_days": FORECAST_DAYS,
+        "past_days": PAST_DAYS,
         "wind_speed_unit": WIND_SPEED_UNIT,
         "timezone": "UTC",
     }

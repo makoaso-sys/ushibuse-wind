@@ -165,6 +165,16 @@ def _jst_naive(iso: str):
     return datetime.fromisoformat(iso).astimezone(pc.JST).replace(tzinfo=None)
 
 
+def _dir_break(times, degs):
+    """方位[0-360)の折れ線を、ラップ(隣接で>180のジャンプ)で NaN 分断して縦線を防ぐ。"""
+    ts, ds = [], []
+    for i, (t, d) in enumerate(zip(times, degs)):
+        if i > 0 and abs(d - degs[i - 1]) > 180:
+            ts.append(t); ds.append(np.nan)
+        ts.append(t); ds.append(d)
+    return ts, ds
+
+
 def _load_cal() -> dict | None:
     """calibration.json を読む。なければ None。"""
     cal_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
@@ -213,13 +223,19 @@ def _load_obs(fa_iso: str, hours: int = 12) -> list | None:
 def make_chart(conn, fa: str, path: str) -> None:
     models = [r["model"] for r in conn.execute(
         "SELECT DISTINCT model FROM forecasts WHERE fetched_at=? ORDER BY model", (fa,))]
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(9, 10.8), sharex=True,
-                                             gridspec_kw={"height_ratios": [3, 0.49, 0.98, 0.82]})
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(9, 11.1), sharex=True,
+                                             gridspec_kw={"height_ratios": [3, 0.7, 0.98, 0.82]})
     colors = {"jma_msm": "#d6336c", "jma_gsm": "#f08c00",
               "ecmwf_ifs025": "#1f5fa5", "gfs_seamless": "#2f9e44"}
 
     cal = _load_cal()
     obs = _load_obs(fa)          # 直近12hの計測値(なければ None)
+
+    # 現在時刻(発表時刻)を基準に表示窓を固定する。
+    # past_days で予測が過去まで伸びても、左端は実測窓(12h前)に合わせる。
+    now_jst     = datetime.fromisoformat(fa).astimezone(pc.JST).replace(tzinfo=None)
+    chart_left  = now_jst - timedelta(hours=12)
+    chart_right = now_jst + timedelta(hours=MAX_LEAD)
 
     # ── パネル1: 風速 ──────────────────────────────────────────
     t0 = None
@@ -254,7 +270,10 @@ def make_chart(conn, fa: str, path: str) -> None:
 
         lw    = (2.0 if m == "jma_msm" else 1.2) if cal else (2.8 if m == "jma_msm" else 1.5)
         alpha = 0.65 if cal else 1.0
-        ax1.plot(t, ms, label=m,
+        # 個別モデル線は未来のみ表示(過去は加重平均線だけにする)
+        t_f  = [ti for ti in t if ti >= now_jst]
+        ms_f = [v for ti, v in zip(t, ms) if ti >= now_jst]
+        ax1.plot(t_f, ms_f, label=m,
                  color=colors.get(m, "#888"), linewidth=lw, marker="o",
                  markersize=2.5, alpha=alpha)
 
@@ -316,8 +335,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax1.axhspan(pc.SAIL_MIN_MS, pc.SAIL_MAX_MS, color="#2f9e44", alpha=0.08)
     ax1.axhline(pc.SAIL_MIN_MS, color="#2f9e44", ls="--", lw=1, alpha=.6)
     ax1.axhline(pc.SAIL_MAX_MS, color="#e8590c", ls="--", lw=1, alpha=.6)
-    if t0:
-        ax1.text(t0, pc.SAIL_MAX_MS + 0.3, "出走レンジ", color="#2f9e44", fontsize=9)
+    ax1.text(chart_left, pc.SAIL_MAX_MS + 0.3, "出走レンジ", color="#2f9e44", fontsize=9)
     ax1.set_ylabel("風速 (m/s)")
     ax1.set_ylim(0, max(pc.SAIL_MAX_MS + 2, 16))
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
@@ -348,7 +366,8 @@ def make_chart(conn, fa: str, path: str) -> None:
                  fontsize=8, ha="center", va="bottom",
                  transform=ax1.get_xaxis_transform())
 
-    # ── パネル2: 風向矢印（補正済み加重平均） ─────────────────────
+    # ── パネル2: 風向（0-360°の折れ線, N/E/S/W/N） ─────────────────
+    # 補正済み加重平均の風向(吹いてくる向き)を計算する
     dir_by_time: dict = {}
     _n_models = max(len(models), 1)
     for m in models:
@@ -369,47 +388,54 @@ def make_chart(conn, fa: str, path: str) -> None:
                 u_r = r["wind_u"] * math.cos(-bias_rad) - r["wind_v"] * math.sin(-bias_rad)
                 v_r = r["wind_u"] * math.sin(-bias_rad) + r["wind_v"] * math.cos(-bias_rad)
             dir_by_time.setdefault(ti, []).append((wt, u_r, v_r))
+
+    # 予測: 過去は青線、未来は3時間おきの青矢印（中心をSの線=180°に固定）
     if dir_by_time:
-        step = 3
-        dt_all = sorted(dir_by_time.keys())
-        dt_s = dt_all[::step]
-        avg_u, avg_v = [], []
-        for ti in dt_s:
+        ft = sorted(dir_by_time.keys())
+        fu, fv, fdir = [], [], []
+        for ti in ft:
             entries = dir_by_time[ti]
             w_tot = sum(w for w, _, _ in entries)
-            avg_u.append(sum(w * u for w, u, _ in entries) / w_tot)
-            avg_v.append(sum(w * v for w, _, v in entries) / w_tot)
-        u_arr = np.array(avg_u, dtype=float)
-        v_arr = np.array(avg_v, dtype=float)
-        mag = np.hypot(u_arr, v_arr); mag[mag == 0] = 1.0
-        ax2.axhline(0, color="#ccc", lw=0.8)
-        ax2.quiver(dt_s, np.zeros(len(dt_s)), u_arr / mag, v_arr / mag, color="#1f5fa5",
-                   angles="uv", scale_units="inches", scale=2.2, width=0.004,
-                   headwidth=4, headlength=5, pivot="mid")
-    else:
-        ax2.axhline(0, color="#ccc", lw=0.8)
+            au = sum(w * u for w, u, _ in entries) / w_tot
+            av = sum(w * v for w, _, v in entries) / w_tot
+            fu.append(au); fv.append(av)
+            fdir.append(pc.uv_to_speed_dir(au, av)[1])   # 吹いてくる向き(度)
 
-    # ── 実測(計測)風向: 作成時刻の直近12h(黒い矢印) ──
-    if obs:
-        od = [(o[0], o[3], o[1]) for o in obs if o[3] is not None and o[1] is not None]
-        od = od[::3]          # 予測(気温)と同じ3時間おきに間引く
-        if od:
-            odt = [x[0] for x in od]
-            ou = np.array([-s * math.sin(math.radians(d)) for _, d, s in od], dtype=float)
-            ov = np.array([-s * math.cos(math.radians(d)) for _, d, s in od], dtype=float)
-            omag = np.hypot(ou, ov); omag[omag == 0] = 1.0
-            ax2.quiver(odt, np.zeros(len(odt)), ou / omag, ov / omag, color="#555",
+        past_idx = [i for i, ti in enumerate(ft) if ti <= now_jst]
+        if past_idx:
+            pt = [ft[i] for i in past_idx]
+            pdir = [fdir[i] for i in past_idx]
+            lt, ld = _dir_break(pt, pdir)
+            ax2.plot(lt, ld, color="#1f5fa5", lw=1.6, zorder=4)
+
+        fut_idx = [i for i, ti in enumerate(ft) if ti >= now_jst][::3]
+        if fut_idx:
+            qt = [ft[i] for i in fut_idx]
+            qu = np.array([fu[i] for i in fut_idx], dtype=float)
+            qv = np.array([fv[i] for i in fut_idx], dtype=float)
+            qmag = np.hypot(qu, qv); qmag[qmag == 0] = 1.0
+            ax2.quiver(qt, np.full(len(qt), 180), qu / qmag, qv / qmag, color="#1f5fa5",
                        angles="uv", scale_units="inches", scale=2.2, width=0.004,
                        headwidth=4, headlength=5, pivot="mid", zorder=6)
-    ax2.set_ylim(-1, 1); ax2.set_yticks([])
-    dir_label = "風向"
-    ax2.set_ylabel(dir_label, fontsize=11)
-    _dir_note = "矢印 = 風の進む向き（上が北）"
+
+    # 実測: 灰線（直近12h）
     if obs:
-        _dir_note += " ／ 灰=実測(直近12h) 青=予測"
+        ot = [o[0] for o in obs if o[3] is not None]
+        oval = [o[3] for o in obs if o[3] is not None]
+        if ot:
+            lt, ld = _dir_break(ot, oval)
+            ax2.plot(lt, ld, color="#555", lw=1.4, label="実測", zorder=5)
+
+    ax2.set_ylim(0, 360)
+    ax2.set_yticks([0, 90, 180, 270, 360])
+    ax2.set_yticklabels(["N", "E", "S", "W", "N"], fontsize=9)
+    ax2.set_ylabel("風向", fontsize=11)
+    _dir_note = "風が吹いてくる向き ／ 青線=予測(過去) 矢印=予測(未来,3hおき)"
+    if obs:
+        _dir_note += " 灰線=実測(直近12h)"
     ax2.text(0.005, 0.97, _dir_note, transform=ax2.transAxes,
              fontsize=8, va="top", color="#555")
-    ax2.grid(alpha=.2, axis="x")
+    ax2.grid(alpha=.2)
 
     # ── パネル3: 天気・気温・降水（テキスト表形式） ──────────────
 
@@ -449,6 +475,8 @@ def make_chart(conn, fa: str, path: str) -> None:
         if i % step != 0:
             continue
         x = _jst_naive(vt)
+        if x < now_jst:            # 過去は実測(下で気温を描画)に任せ、予測は未来のみ
+            continue
 
         # 天気シンボル: 4モデル多数決 (y=2.5)
         codes = _wx_codes.get(vt, [])
@@ -485,11 +513,12 @@ def make_chart(conn, fa: str, path: str) -> None:
         ax3.text(x, 0.5, precip_txt, ha="center", va="center",
                  fontsize=13, color=color, fontweight="bold" if (precip_int or 0) > 0 else "normal")
 
-    # 実測気温(直近12h)を黒字で気温行(y=1.5)に重ねる。予測と同じ3時間おきに間引く。
+    # 実測気温を灰字で気温行(y=1.5)に重ねる。3時間おき。
+    # 左端(12h前)は数字がグラフからはみ出るため表示しない。
     if obs:
         for o in obs[::3]:
             temp = o[4]
-            if temp is None:
+            if temp is None or o[0] < chart_left + timedelta(hours=1):
                 continue
             ax3.text(o[0], 1.5, f"{temp:.0f}°", ha="center", va="center",
                      fontsize=13, color="#666", fontweight="bold")
@@ -497,22 +526,26 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax3.grid(alpha=.2, axis="x")
 
     # ── パネル4: 潮位（田子の浦港 調和定数による計算値） ───────────────
-    _t0 = t0 if t0 is not None else datetime.now()
-    t_tide_start = min(_t0, obs[0][0]) if obs else _t0     # 実測分だけ左に延長
-    t_tide_end = _t0 + timedelta(hours=MAX_LEAD)
-    n_tide = int((t_tide_end - t_tide_start).total_seconds() // 600) + 1   # 10分刻み
-    dt_tide = [t_tide_start + timedelta(minutes=10 * i) for i in range(n_tide)]
+    # 表示範囲より前後6h広く計算し、左端(最初の満潮)近くの極値も検出できるようにする。
+    pad = timedelta(hours=6)
+    tide_start = chart_left - pad
+    n_tide = int(((chart_right + pad) - tide_start).total_seconds() // 600) + 1  # 10分刻み
+    dt_tide = [tide_start + timedelta(minutes=10 * i) for i in range(n_tide)]
     h_tide  = _predict_tide_cm(dt_tide)
     ax4.plot(dt_tide, h_tide, color="#1565C0", lw=1.8, zorder=3)
     ax4.fill_between(dt_tide, 0, h_tide, alpha=0.15, color="#1565C0", zorder=2)
     hi_idx, lo_idx = _tide_peaks(h_tide, order=30)
     for idx in hi_idx:
         dt, hv = dt_tide[idx], h_tide[idx]
+        if not (chart_left <= dt <= chart_right):     # 表示範囲内の極値のみ注記
+            continue
         ax4.annotate(f"満 {hv:.0f}cm\n{dt:%H:%M}",
                      xy=(dt, hv), xytext=(0, 2), textcoords="offset points",
                      ha="center", fontsize=7, color="#C62828", fontweight="bold")
     for idx in lo_idx:
         dt, hv = dt_tide[idx], h_tide[idx]
+        if not (chart_left <= dt <= chart_right):
+            continue
         ax4.annotate(f"干 {hv:.0f}cm\n{dt:%H:%M}",
                      xy=(dt, hv), xytext=(0, -16), textcoords="offset points",
                      ha="center", fontsize=7, color="#1565C0", fontweight="bold",
@@ -522,6 +555,7 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax4.grid(alpha=0.2, axis="x")
     ax4.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
 
+    ax1.set_xlim(chart_left, chart_right)   # 共有軸: 実測窓(左)〜48h先(右)に固定
     plt.tight_layout()
     plt.savefig(path, dpi=110)
     plt.close(fig)
