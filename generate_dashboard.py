@@ -377,7 +377,15 @@ def make_chart(conn, fa: str, path: str) -> None:
                ORDER BY valid_time""", (fa, m, MAX_LEAD)).fetchall()
         if not drows:
             continue
-        wt = cal["models"][m]["weight"] if cal and m in cal["models"] else 1.0 / _n_models
+        # 風向は専用の重みを使う。風向に情報を持たないモデル(2026-07 時点では
+        # ecmwf_ifs025)は dir_weight=0 で除外される。古い calibration.json には
+        # このキーが無いので weight にフォールバックする。
+        if cal and m in cal["models"]:
+            wt = cal["models"][m].get("dir_weight", cal["models"][m]["weight"])
+        else:
+            wt = 1.0 / _n_models
+        if wt <= 0:
+            continue
         for r in drows:
             ti = _jst_naive(r["valid_time"])
             u_r, v_r = r["wind_u"], r["wind_v"]
@@ -622,13 +630,15 @@ def make_html(conn, fa: str, path: str) -> None:
                 """SELECT model, wind_speed_ms, wind_u, wind_v, valid_time FROM forecasts
                    WHERE fetched_at=? AND valid_time=? ORDER BY model""",
                 (fa, vt_iso)).fetchall()
-            ws_sum = wd_wu = wd_wv = w_tot = 0.0
+            ws_sum = wd_wu = wd_wv = w_tot = wd_tot = 0.0
             for r in rows:
                 m = r["model"]
                 if m not in cal["models"]:
                     continue
                 vt_jst = datetime.fromisoformat(r["valid_time"]).astimezone(pc.JST)
                 wt = cal["models"][m]["weight"]
+                # 風向は専用の重み。風向に情報がないモデルは 0 で外れる。
+                dwt = cal["models"][m].get("dir_weight", wt)
                 # 風速補正
                 spd = r["wind_speed_ms"]
                 if spd is not None:
@@ -636,17 +646,18 @@ def make_html(conn, fa: str, path: str) -> None:
                     ob = cal["models"][m]["bias_overall"]
                     ws_sum += wt * max(0.0, spd - hb.get(str(vt_jst.hour), ob))
                 # 風向補正（ベクトル回転）
-                if r["wind_u"] is not None:
+                if r["wind_u"] is not None and dwt > 0:
                     hdb = cal["models"][m].get("hourly_dir_bias", {})
                     bias_rad = math.radians(hdb.get(str(vt_jst.hour),
                                                      cal["models"][m]["dir_bias"]))
                     u_c = r["wind_u"] * math.cos(-bias_rad) - r["wind_v"] * math.sin(-bias_rad)
                     v_c = r["wind_u"] * math.sin(-bias_rad) + r["wind_v"] * math.cos(-bias_rad)
-                    wd_wu += wt * u_c; wd_wv += wt * v_c
+                    wd_wu += dwt * u_c; wd_wv += dwt * v_c
+                    wd_tot += dwt
                 w_tot += wt
             speed = round(ws_sum / w_tot, 1) if w_tot > 0 else ev["mean_speed_ms"]
-            if w_tot > 0 and (wd_wu != 0 or wd_wv != 0):
-                _, mean_dir = pc.uv_to_speed_dir(wd_wu / w_tot, wd_wv / w_tot)
+            if wd_tot > 0 and (wd_wu != 0 or wd_wv != 0):
+                _, mean_dir = pc.uv_to_speed_dir(wd_wu / wd_tot, wd_wv / wd_tot)
                 mean_compass = pc.compass16(mean_dir)
             else:
                 mean_dir = ev["mean_dir_deg"]

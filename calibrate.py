@@ -70,6 +70,22 @@ def load_obs_sources(csv_paths: list[str], db_paths: list[str]) -> pd.DataFrame:
 N_HARM = 2          # 日周バイアスの調和次数。時刻別平均24個より自由度が少なく安定
 WEIGHT_FLOOR_MS = 0.5   # 強風重視の重み下限。弱風も0にはしない
 MAX_LEAD_FIT = 24       # 重み・バイアスを当てはめる lead 範囲(検証した範囲)
+CALM_MS = 1.0           # これ未満の実測風速では風向が無意味なので風向評価から外す
+DIR_SKILL_MIN = 0.30    # 風向の集中度がこれ未満のモデルは風向合成に使わない
+
+
+def dir_concentration(err_deg: np.ndarray) -> float:
+    """風向誤差の集中度 R を返す。0=一様(情報なし)、1=一点に集中。
+
+    2026-07 の検証では ecmwf_ifs025 が R=0.16 と実質ランダムだった
+    (lead 1h でも 24h でも風向MAE 88°で一定)。解像度0.25°では湾内の
+    局地風系を解像できていないと見られる。R が低いモデルを風向の
+    加重平均に混ぜると全体が劣化するため、閾値で除外する。
+    """
+    if len(err_deg) == 0:
+        return 0.0
+    r = np.radians(err_deg)
+    return float(np.hypot(np.sin(r).mean(), np.cos(r).mean()))
 
 
 def _harm(hour: np.ndarray) -> np.ndarray:
@@ -188,11 +204,17 @@ def calibrate(obs: pd.DataFrame, db_path: str = DB_PATH, out_path: str = OUT_PAT
             hd = circ_diff(hg["wind_dir_deg"], hg["obs_dir"])
             hourly_dir_bias[str(int(h))] = round(float(hd.mean()), 2)
 
+        # 風向の集中度は弱風を除いて測る(弱風時の風向は物理的にランダム)
+        strong = valid_dir[valid_dir["obs_spd"] >= CALM_MS]
+        conc = dir_concentration(
+            circ_diff(strong["wind_dir_deg"], strong["obs_dir"]).values)
+
         result["models"][model] = {
             "rmse":             round(rmse, 4),
             "mae":              round(mae,  4),
             "bias_overall":     round(bias, 4),
             "dir_bias":         round(dir_bias, 2),
+            "dir_concentration": round(conc, 4),
             "hourly_bias":      hourly_bias,
             "hourly_dir_bias":  hourly_dir_bias,
             "hourly_n":         hourly_n,
@@ -231,9 +253,24 @@ def calibrate(obs: pd.DataFrame, db_path: str = DB_PATH, out_path: str = OUT_PAT
                                if len(both) >= 100 else "equal")
     result["weight_n"] = int(len(both))
 
+    # --- 風向の重み ---
+    # 風速とは別に持つ。風向に情報を持たないモデルを混ぜると全体が劣化するため。
+    # 実測では ecmwf を外すと風向MAE 53.3°→47.5°、集中度 0.497→0.582 に改善した。
+    # 閾値判定なので、将来 ecmwf の風向が改善すれば自動的に復帰する。
+    skilled = {m: result["models"][m]["dir_concentration"] >= DIR_SKILL_MIN
+               for m in models}
+    if not any(skilled.values()):    # 全滅なら風速の重みをそのまま使う(退避)
+        skilled = {m: True for m in models}
+    dir_tot = sum(result["models"][m]["weight"] for m in models if skilled[m])
+    for m in models:
+        dw = (result["models"][m]["weight"] / dir_tot) if skilled[m] and dir_tot > 0 else 0.0
+        result["models"][m]["dir_weight"] = round(float(dw), 4)
+
     print("\n=== アンサンブル重み (バイアス補正後・非負総和1) ===")
     for m, v in sorted(result["models"].items(), key=lambda x: -x[1]["weight"]):
-        print(f"  {m:20s}: {v['weight']:.3f}  (RMSE {v['rmse']:.3f} m/s)")
+        note = "" if v["dir_weight"] > 0 else "  ← 風向は不使用"
+        print(f"  {m:20s}: 風速 {v['weight']:.3f}  風向 {v['dir_weight']:.3f}"
+              f"  (RMSE {v['rmse']:.3f} m/s, 風向集中度 {v['dir_concentration']:.3f}){note}")
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
