@@ -64,6 +64,13 @@ HOURLY_VARS = [
     "weather_code",
     "precipitation_probability",
     "precipitation",
+    # 上空風。地上風は局地の地形効果で乱れるが、上空風は総観規模の場を保つため
+    # 海風の発達判定に効く見込みがある(2026-07 時点では蓄積のみ、評価はデータが
+    # 貯まってから)。4モデルとも取得可能なことを実機で確認済み。
+    "wind_speed_925hPa",
+    "wind_direction_925hPa",
+    "wind_speed_850hPa",
+    "wind_direction_850hPa",
 ]
 
 FORECAST_DAYS = 3          # 12〜24h をカバーするのに十分(MSM の地平線にも収まる)
@@ -122,6 +129,10 @@ _MIGRATIONS = [
     "ALTER TABLE forecasts ADD COLUMN precipitation_prob REAL",
     "ALTER TABLE forecasts ADD COLUMN precipitation_mm REAL",
     "ALTER TABLE forecasts ADD COLUMN wind_gusts_ms REAL",
+    "ALTER TABLE forecasts ADD COLUMN wind_speed_925_ms REAL",
+    "ALTER TABLE forecasts ADD COLUMN wind_dir_925_deg REAL",
+    "ALTER TABLE forecasts ADD COLUMN wind_speed_850_ms REAL",
+    "ALTER TABLE forecasts ADD COLUMN wind_dir_850_deg REAL",
 ]
 
 INSERT_SQL = """
@@ -130,13 +141,17 @@ INSERT OR IGNORE INTO forecasts
      wind_speed_ms, wind_dir_deg, wind_u, wind_v,
      surface_pressure_hpa, temperature_2m_c,
      weather_code, precipitation_prob, precipitation_mm,
-     wind_gusts_ms, latitude, longitude)
+     wind_gusts_ms, latitude, longitude,
+     wind_speed_925_ms, wind_dir_925_deg,
+     wind_speed_850_ms, wind_dir_850_deg)
 VALUES
     (:model, :fetched_at, :valid_time, :lead_hours,
      :wind_speed_ms, :wind_dir_deg, :wind_u, :wind_v,
      :surface_pressure_hpa, :temperature_2m_c,
      :weather_code, :precipitation_prob, :precipitation_mm,
-     :wind_gusts_ms, :latitude, :longitude)
+     :wind_gusts_ms, :latitude, :longitude,
+     :wind_speed_925_ms, :wind_dir_925_deg,
+     :wind_speed_850_ms, :wind_dir_850_deg)
 """
 
 
@@ -183,6 +198,10 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     wcode = hourly.get("weather_code") or []
     prob = hourly.get("precipitation_probability") or []
     precip = hourly.get("precipitation") or []
+    sp925 = hourly.get("wind_speed_925hPa") or []
+    dir925 = hourly.get("wind_direction_925hPa") or []
+    sp850 = hourly.get("wind_speed_850hPa") or []
+    dir850 = hourly.get("wind_direction_850hPa") or []
 
     rows: list[dict] = []
     for i, t in enumerate(times):
@@ -214,6 +233,10 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
             "wind_gusts_ms": _get(gusts, i),
             "latitude": payload.get("latitude", LATITUDE),
             "longitude": payload.get("longitude", LONGITUDE),
+            "wind_speed_925_ms": _get(sp925, i),
+            "wind_dir_925_deg": _get(dir925, i),
+            "wind_speed_850_ms": _get(sp850, i),
+            "wind_dir_850_deg": _get(dir850, i),
         })
     return rows
 
