@@ -37,6 +37,7 @@ from matplotlib.offsetbox import AnnotationBbox, DrawingArea
 from matplotlib.patches import Circle as _MplCircle
 import numpy as np
 
+import obs_quality
 import phase6_common as pc
 
 MAX_LEAD = 48
@@ -212,8 +213,10 @@ def _load_obs(fa_iso: str, hours: int = 12) -> list | None:
     out = []
     for r in rows:
         t_jst = datetime.fromisoformat(r["valid_time"]) + timedelta(hours=9)  # UTC->JST naive
-        out.append((t_jst, r["wind_speed_ms"], r["wind_gust_ms"],
-                    r["wind_dir_deg"], r["temp_c"]))
+        # 取り込み側でも弾いているが、観測機のスパイクをそのまま描かないよう表示側でも通す
+        v, _ = obs_quality.sanitize({k: r[k] for k in r.keys()})
+        out.append((t_jst, v["wind_speed_ms"], v["wind_gust_ms"],
+                    v["wind_dir_deg"], v["temp_c"]))
     return out or None
 
 
