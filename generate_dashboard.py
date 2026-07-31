@@ -270,6 +270,9 @@ def make_chart(conn, fa: str, path: str) -> None:
                     ms.append(None)
         else:
             ms = ms_raw
+            for ti, v in zip(t, ms_raw):
+                if v is not None:
+                    corrected_by_time.setdefault(ti, []).append((1.0, v))
 
         lw    = (2.0 if m == "jma_msm" else 1.2) if cal else (2.8 if m == "jma_msm" else 1.5)
         alpha = 0.65 if cal else 1.0
@@ -282,13 +285,14 @@ def make_chart(conn, fa: str, path: str) -> None:
 
     # 加重アンサンブル線（補正済み）
     ens_t, ens_ms = [], []
-    if cal and corrected_by_time:
+    if corrected_by_time:
         ens_t  = sorted(corrected_by_time.keys())
         ens_ms = [sum(w * v for w, v in corrected_by_time[ti]) /
                   sum(w for w, _ in corrected_by_time[ti])
                   for ti in ens_t]
-        ax1.plot(ens_t, ens_ms, color="#111", lw=2.8, ls="--",
-                 label="加重平均（補正済み）", zorder=6)
+        if cal:
+            ax1.plot(ens_t, ens_ms, color="#111", lw=2.8, ls="--",
+                     label="加重平均（補正済み）", zorder=6)
 
     # 突風の加重平均
     gust_by_time: dict = {}
@@ -340,7 +344,16 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax1.axhline(pc.SAIL_MAX_MS, color="#e8590c", ls="--", lw=1, alpha=.6)
     ax1.text(chart_left, pc.SAIL_MAX_MS + 0.3, "出走レンジ", color="#2f9e44", fontsize=9)
     ax1.set_ylabel("風速 (m/s)")
-    ax1.set_ylim(0, max(pc.SAIL_MAX_MS + 2, 16))
+    # 0 より下に数値行(予測 / 実測)の帯を確保する。目盛は 0 以上のみ。
+    _y_top    = max(pc.SAIL_MAX_MS + 2, 16)
+    _row_pred = -_y_top * 0.075
+    _row_obs  = -_y_top * 0.165
+    _y_bottom = -_y_top * (0.225 if obs else 0.13)
+    ax1.set_ylim(_y_bottom, _y_top)
+    ax1.set_yticks(np.arange(0, _y_top + 0.01, 2))
+    ax1.set_axisbelow(True)
+    ax1.axhspan(_y_bottom, 0, facecolor="white", edgecolor="none", zorder=1.5)
+    ax1.axhline(0, color="#bbb", lw=0.8, zorder=1.6)
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
     ax1.set_title(f"Ushibuse Beach Multi-model Wind Forecast  (issued {_fa.month}/{_fa.day}"
                   f"({_WD[_fa.weekday()]}) {_fa:%H:%M} JST)", fontsize=12)
@@ -365,9 +378,49 @@ def make_chart(conn, fa: str, path: str) -> None:
         x = _jst_naive(vtiso)
         hour = datetime.fromisoformat(vtiso).astimezone(pc.JST).hour
         ax1.axvline(x, color="#6741d9", ls=":", lw=1.3, alpha=.7)
-        ax1.text(x, 0.04, f"{hour:02d}:00", color="#6741d9",
-                 fontsize=8, ha="center", va="bottom",
-                 transform=ax1.get_xaxis_transform())
+        ax1.text(x, 0.15, f"{hour:02d}:00", color="#6741d9",
+                 fontsize=8, ha="center", va="bottom", zorder=3,
+                 bbox=dict(facecolor="white", edgecolor="none", pad=0.6, alpha=0.85))
+
+    # ── パネル1の一番下: 3時間おきの風速数値(予測=加重平均 / 実測) ──
+    _ens_map = {ti: v for ti, v in zip(ens_t, ens_ms)}
+    _obs_map = {o[0]: o[1] for o in obs} if obs else {}
+
+    def _at(dmap, ti, tol_min=30):
+        """ti に最も近い(±tol_min 分)値を返す。無ければ None。"""
+        best, bd = None, timedelta(minutes=tol_min)
+        for k, v in dmap.items():
+            if v is None:
+                continue
+            d = abs(k - ti)
+            if d <= bd:
+                best, bd = v, d
+        return best
+
+    ax1.text(-0.008, _row_pred, "予測", transform=ax1.get_yaxis_transform(),
+             ha="right", va="center", fontsize=9, color="#111")
+    if obs:
+        ax1.text(-0.008, _row_obs, "実測", transform=ax1.get_yaxis_transform(),
+                 ha="right", va="center", fontsize=9, color="#555")
+
+    _lt = chart_left.replace(minute=0, second=0, microsecond=0)
+    while _lt.hour % 3 != 0:
+        _lt += timedelta(hours=1)
+    while _lt <= chart_right - timedelta(minutes=30):
+        if _lt >= chart_left + timedelta(minutes=30):
+            pv = _at(_ens_map, _lt)
+            if pv is not None:
+                ax1.text(_lt, _row_pred, f"{pv:.1f}", ha="center", va="center",
+                         fontsize=9, color="#111", zorder=3)
+            ov = _at(_obs_map, _lt)
+            if obs and ov is not None:
+                ax1.text(_lt, _row_obs, f"{ov:.1f}", ha="center", va="center",
+                         fontsize=9, color="#555", zorder=3)
+        _lt += timedelta(hours=3)
+
+    # 日時軸はパネル1の下に置く(パネル4ではなく)
+    ax1.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
+    ax1.tick_params(axis="x", labelbottom=True, labelsize=9)
 
     # ── パネル2: 風向（0-360°の折れ線, N/E/S/W/N） ─────────────────
     # 補正済み加重平均の風向(吹いてくる向き)を計算する
@@ -564,10 +617,25 @@ def make_chart(conn, fa: str, path: str) -> None:
     ax4.set_ylim(0, 280)
     ax4.set_ylabel("潮位 (cm)", fontsize=10)
     ax4.grid(alpha=0.2, axis="x")
-    ax4.xaxis.set_major_formatter(FuncFormatter(_fmt_date))
+    ax4.tick_params(axis="x", labelbottom=False)
 
     ax1.set_xlim(chart_left, chart_right)   # 共有軸: 実測窓(左)〜48h先(右)に固定
-    plt.tight_layout()
+    # 下端は干潮の注記(軸の外にはみ出す)用に少し空ける
+    plt.tight_layout(rect=(0, 0.028, 1, 1))
+
+    # パネル1の下に日時ラベルを入れた分、tight_layout が全段の隙間を等しく広げて
+    # しまう。パネル2〜4の隙間だけ詰め直し、空いた分を各段の高さに戻す。
+    _axes = (ax2, ax3, ax4)
+    _pos = [a.get_position() for a in _axes]
+    _gap = 0.012
+    _top, _bottom = _pos[0].y1, _pos[-1].y0
+    _tot = sum(p.height for p in _pos)
+    _avail = (_top - _bottom) - _gap * (len(_axes) - 1)
+    _y = _top
+    for _a, _p in zip(_axes, _pos):
+        _h = _avail * _p.height / _tot
+        _a.set_position([_p.x0, _y - _h, _p.width, _h])
+        _y -= _h + _gap
     plt.savefig(path, dpi=110)
     plt.close(fig)
 
