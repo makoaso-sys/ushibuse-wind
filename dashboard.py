@@ -59,7 +59,7 @@ for col, hour in zip(cols, pc.TARGET_HOURS_JST):
             delta=f"{ev['mean_compass']} ({ev['mean_dir_deg']}°)",
             delta_color="off",
         )
-        st.write(f"**{verdict}**　合議 {ev['agree']}")
+        st.write(f"**{verdict}**　モデル別 {ev['agree']}")
 
 # ============================================================
 # 複数モデルの風速予測チャート(次48時間)
@@ -104,5 +104,5 @@ for hour in pc.TARGET_HOURS_JST:
     tbl.columns = ["モデル", "風速m/s", "風向", "度", "出走可"]
     st.dataframe(tbl, hide_index=True, use_container_width=True)
 
-st.caption("※ 現在はフェーズ1の生予測。フェーズ5の補正モデル完成後、"
-           "ここに補正後の値と出走確率が加わります。")
+st.caption("※ 上のサマリは補正済み加重平均風速で判定している(calibration.json が無い場合は"
+           "単純平均)。この表はモデル別の生予測で、参考表示。")

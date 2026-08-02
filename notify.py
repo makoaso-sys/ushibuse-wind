@@ -64,11 +64,13 @@ def build_message(ev: dict) -> tuple[str, str, str]:
     when = vt.strftime("%m/%d %H:%M JST") if vt else "?"
     slot = ev.get("label", "")
     head = f"🏄 出走チャンス {slot}" if ev["sailable"] else f"… 微妙 {slot}"
+    src = "補正済み加重平均" if ev.get("speed_source") == "corrected_weighted" \
+          else "単純平均(補正データなし)"
     body = (f"{when} 予測\n"
             f"風速 {ev['mean_speed_ms']}m/s / 風向 {ev['mean_compass']}"
             f"({ev['mean_dir_deg']}°)\n"
-            f"モデル合議 {ev['agree']} が出走可\n"
-            f"(生予測の合議・補正前)")
+            f"出走レンジ {pc.SAIL_MIN_MS:.0f}〜{pc.SAIL_MAX_MS:.0f}m/s で判定\n"
+            f"({src}／モデル別内訳 {ev['agree']})")
     tags = "surfer" if ev["sailable"] else "thinking"
     return head, body, tags
 
@@ -113,8 +115,8 @@ def run(db_path: str, topic: str, server: str, dry: bool) -> None:
         verdict = "出走可" if ev["sailable"] else "見送り"
         vt = ev["valid_time_jst"]
         when = vt.strftime("%m/%d %H:%M") if vt else ev["label"]
-        print(f"  {when} JST: {verdict}  平均{ev['mean_speed_ms']}m/s "
-              f"{ev['mean_compass']}  合議{ev['agree']}")
+        print(f"  {when} JST: {verdict}  加重平均{ev['mean_speed_ms']}m/s "
+              f"{ev['mean_compass']}  モデル別{ev['agree']}")
 
         if NOTIFY_ONLY_WHEN_SAILABLE and not ev["sailable"]:
             continue

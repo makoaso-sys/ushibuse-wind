@@ -177,15 +177,11 @@ def _dir_break(times, degs):
 
 
 def _load_cal() -> dict | None:
-    """calibration.json を読む。なければ None。"""
-    cal_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
-    if os.path.exists(cal_path):
-        try:
-            with open(cal_path, encoding="utf-8") as _f:
-                return json.load(_f)
-        except Exception:
-            pass
-    return None
+    """calibration.json を読む。なければ None。
+
+    判定と同じものを見るよう phase6_common に一本化してある(グラフ描画用)。
+    """
+    return pc.load_calibration()
 
 
 def _load_obs(fa_iso: str, hours: int = 12) -> list | None:
@@ -674,7 +670,7 @@ HTML = """<!doctype html>
 <div class="cards">{cards}</div>
 <img src="forecast.png?v={ver}" alt="複数モデル風予測">
 <p class="note">出走判定は 10:00 / 14:00（JST）時点の補正済み加重平均風速に基づく（補正データがない場合は単純平均）。このページは約30分ごとに自動再読込します。</p>
-<p class="note">【出走判定条件】風速 {smin:.0f}〜{smax:.0f} m/s ／ 風向 NE〜S〜W（45°〜270°）</p>
+<p class="note">【出走判定条件】風速 {smin:.0f}〜{smax:.0f} m/s（風向は判定に使っていません。表示のみ）</p>
 </body>
 </html>
 """
@@ -688,65 +684,20 @@ CARD = """<div class="card">
 
 
 def make_html(conn, fa: str, path: str) -> None:
-    cal = _load_cal()
     cards = []
     for vt_iso in pc.next_n_clock_valid_times(conn, fa, pc.TARGET_HOURS_JST):
+        # 補正済み加重平均の風速・風向、およびそれに基づく出走可否は
+        # phase6_common.evaluate_at() が返す(notify.py と同じ判定を使う)。
         ev = pc.evaluate_at(conn, vt_iso, fa)
         if not ev:
             continue
-
-        # 補正済み加重平均: 風速・風向を同時に計算
-        if cal:
-            rows = conn.execute(
-                """SELECT model, wind_speed_ms, wind_u, wind_v, valid_time FROM forecasts
-                   WHERE fetched_at=? AND valid_time=? ORDER BY model""",
-                (fa, vt_iso)).fetchall()
-            ws_sum = wd_wu = wd_wv = w_tot = wd_tot = 0.0
-            for r in rows:
-                m = r["model"]
-                if m not in cal["models"]:
-                    continue
-                vt_jst = datetime.fromisoformat(r["valid_time"]).astimezone(pc.JST)
-                wt = cal["models"][m]["weight"]
-                # 風向は専用の重み。風向に情報がないモデルは 0 で外れる。
-                dwt = cal["models"][m].get("dir_weight", wt)
-                # 風速補正
-                spd = r["wind_speed_ms"]
-                if spd is not None:
-                    hb = cal["models"][m]["hourly_bias"]
-                    ob = cal["models"][m]["bias_overall"]
-                    ws_sum += wt * max(0.0, spd - hb.get(str(vt_jst.hour), ob))
-                # 風向補正（ベクトル回転）
-                if r["wind_u"] is not None and dwt > 0:
-                    hdb = cal["models"][m].get("hourly_dir_bias", {})
-                    bias_rad = math.radians(hdb.get(str(vt_jst.hour),
-                                                     cal["models"][m]["dir_bias"]))
-                    u_c = r["wind_u"] * math.cos(-bias_rad) - r["wind_v"] * math.sin(-bias_rad)
-                    v_c = r["wind_u"] * math.sin(-bias_rad) + r["wind_v"] * math.cos(-bias_rad)
-                    wd_wu += dwt * u_c; wd_wv += dwt * v_c
-                    wd_tot += dwt
-                w_tot += wt
-            speed = round(ws_sum / w_tot, 1) if w_tot > 0 else ev["mean_speed_ms"]
-            if wd_tot > 0 and (wd_wu != 0 or wd_wv != 0):
-                _, mean_dir = pc.uv_to_speed_dir(wd_wu / wd_tot, wd_wv / wd_tot)
-                mean_compass = pc.compass16(mean_dir)
-            else:
-                mean_dir = ev["mean_dir_deg"]
-                mean_compass = ev["mean_compass"]
-        else:
-            speed = ev["mean_speed_ms"]
-            mean_dir = ev["mean_dir_deg"]
-            mean_compass = ev["mean_compass"]
-
-        sailable = (pc.SAIL_MIN_MS <= speed <= pc.SAIL_MAX_MS and
-                    pc.dir_in_arcs(mean_dir))
         vt = ev["valid_time_jst"]
         when = vt.strftime(f"%-m/%-d({_WD[vt.weekday()]}) %H:%M") if vt else "-"
         cards.append(CARD.format(
-            when=when, speed=speed,
-            compass=mean_compass, deg=round(mean_dir),
-            cls="ok" if sailable else "no",
-            verdict="✅ 出走可" if sailable else "⚠️ 見送り"))
+            when=when, speed=ev["mean_speed_ms"],
+            compass=ev["mean_compass"], deg=ev["mean_dir_deg"],
+            cls="ok" if ev["sailable"] else "no",
+            verdict="✅ 出走可" if ev["sailable"] else "⚠️ 見送り"))
     _fa = datetime.fromisoformat(fa).astimezone(pc.JST)
     updated = f"{_fa.month}/{_fa.day}({_WD[_fa.weekday()]}) {_fa:%H:%M}"
     ver = re.sub(r"\D", "", fa)[:12]

@@ -10,7 +10,9 @@ dashboard.py と notify.py の両方から使う。
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -22,11 +24,17 @@ JST = timezone(timedelta(hours=9))
 # ============================================================
 SAIL_MIN_MS = 4.0           # これ未満は走れない(フォイルが浮かない)  ≈8kt
 SAIL_MAX_MS = 12.0          # これ超は強すぎ/危険                    ≈23kt
-# 安全な風向(度, 風が「吹いてくる」向き)。オンショア〜サイドが安全。
-# オフショア(陸から海へ)は流される危険があるため除外する。
-# 下記は南向きの浜の暫定値。★必ず自分の浜の安全な向きに直すこと。
-SAFE_DIR_ARCS = [(45.0, 270.0)]    # NE〜S〜W から吹く風を可とする
-MIN_MODELS_AGREE = 2        # 何モデル以上が「可」なら出走可とみなすか
+# 風向条件は一旦無効化している(2026-08-02)。
+# 従来の 45〜270°(NE〜S〜W) は「南向きの浜」の暫定値で、牛臥の実際の
+# 安全な向きに合わせた検証をしていなかったため、当面は風速のみで判定する。
+# 復活させるときは弧を入れ直すだけでよい(空でなければ再び効く)。
+# 風向は「風が吹いてくる向き」。オンショア〜サイドが安全、
+# オフショア(陸→海)は流される危険があるので除外する向き。
+SAFE_DIR_ARCS: list[tuple[float, float]] = []   # 空 = 風向で絞り込まない
+
+# 出走可否は「補正済み加重平均風速」が上のレンジに入るかで決める。
+# calibration.json が無いときだけ、全モデルの単純平均風速にフォールバックする。
+# モデル別の可否(per_model)と一致数(agree)は参考表示として残すが、判定には使わない。
 
 # 出走判定の対象時刻(JST)。海風が安定する午前・午後のセッションを狙う。
 # 取得後 JUDGE_WITHIN_H 時間以内に来る、各時刻ちょうどの予測値で判定する。
@@ -51,6 +59,8 @@ def compass16(deg: float) -> str:
 
 
 def dir_in_arcs(deg: float, arcs=SAFE_DIR_ARCS) -> bool:
+    if not arcs:                    # 弧の指定なし = 風向による絞り込みをしない
+        return True
     for a, b in arcs:
         if a <= b:
             if a <= deg <= b:
@@ -99,11 +109,75 @@ def nearest_rows(rows: list[dict], target_lead: float) -> dict[str, dict]:
 
 
 # ============================================================
-# 出走可否の判定(★ここを将来 補正モデルに差し替える)
+# 補正(calibration.json)
+# ============================================================
+
+_CAL_CACHE: dict | None = None
+_CAL_LOADED = False
+
+
+def load_calibration() -> dict | None:
+    """calibration.json を読む(プロセス内で1回だけ)。無ければ None。"""
+    global _CAL_CACHE, _CAL_LOADED
+    if _CAL_LOADED:
+        return _CAL_CACHE
+    _CAL_LOADED = True
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            _CAL_CACHE = json.load(f)
+    except Exception:
+        _CAL_CACHE = None
+    return _CAL_CACHE
+
+
+def corrected_weighted(chosen: dict[str, dict], vt_jst: datetime | None,
+                       cal: dict | None = None) -> tuple[float | None, float | None]:
+    """補正済み加重平均の (風速 m/s, 風向 度) を返す。
+
+    * 風速: 時間帯別バイアスを引いてから weight で加重平均する。
+    * 風向: 時間帯別バイアス分を u/v ベクトルで逆回転してから dir_weight で加重平均。
+      風向に情報を持たないモデルは dir_weight=0 で自動的に外れる。
+    calibration.json が無い / 該当モデルが無い場合は None を返す(呼び出し側で単純平均へ)。
+    """
+    cal = cal if cal is not None else load_calibration()
+    if not cal or vt_jst is None:
+        return None, None
+    models = cal.get("models", {})
+    hour = str(vt_jst.hour)
+    ws_sum = w_tot = 0.0
+    wu = wv = wd_tot = 0.0
+    for m, r in chosen.items():
+        mc = models.get(m)
+        if not mc:
+            continue
+        wt = mc.get("weight", 0.0)
+        spd = r["wind_speed_ms"]
+        if spd is not None and wt > 0:
+            bias = mc.get("hourly_bias", {}).get(hour, mc.get("bias_overall", 0.0))
+            ws_sum += wt * max(0.0, spd - bias)
+            w_tot += wt
+        dwt = mc.get("dir_weight", wt)
+        if r["wind_u"] is not None and dwt > 0:
+            b_rad = math.radians(mc.get("hourly_dir_bias", {}).get(
+                hour, mc.get("dir_bias", 0.0)))
+            u_c = r["wind_u"] * math.cos(-b_rad) - r["wind_v"] * math.sin(-b_rad)
+            v_c = r["wind_u"] * math.sin(-b_rad) + r["wind_v"] * math.cos(-b_rad)
+            wu += dwt * u_c; wv += dwt * v_c; wd_tot += dwt
+    speed = ws_sum / w_tot if w_tot > 0 else None
+    if wd_tot > 0 and (wu != 0.0 or wv != 0.0):
+        _, dir_deg = uv_to_speed_dir(wu / wd_tot, wv / wd_tot)
+    else:
+        dir_deg = None
+    return speed, dir_deg
+
+
+# ============================================================
+# 出走可否の判定 — 補正済み加重平均風速が出走レンジに入るか
 # ============================================================
 
 def _aggregate(chosen: dict[str, dict], fa: str) -> dict | None:
-    """モデル別の行(model->row)を合議集計して判定結果を返す。"""
+    """モデル別の行(model->row)を集計して判定結果を返す。"""
     if not chosen:
         return None
     per_model = []
@@ -113,8 +187,9 @@ def _aggregate(chosen: dict[str, dict], fa: str) -> dict | None:
     for m, r in sorted(chosen.items()):
         sp_ms = (r["wind_speed_ms"] or 0)
         di = r["wind_dir_deg"]
-        ok = (SAIL_MIN_MS <= sp_ms <= SAIL_MAX_MS) and \
-             (di is not None and dir_in_arcs(di))
+        # 風向条件は一旦無効(SAFE_DIR_ARCS を参照)。風速レンジのみで見る。
+        # これはモデル別の参考表示用で、出走可否そのものは下の加重平均で決める。
+        ok = SAIL_MIN_MS <= sp_ms <= SAIL_MAX_MS
         n_sail += int(ok)
         speeds.append(sp_ms)
         if r["wind_u"] is not None:
@@ -127,19 +202,28 @@ def _aggregate(chosen: dict[str, dict], fa: str) -> dict | None:
 
     mean_u = sum(us) / len(us) if us else 0.0
     mean_v = sum(vs) / len(vs) if vs else 0.0
-    _, mean_dir = uv_to_speed_dir(mean_u, mean_v)
-    mean_sp = sum(speeds) / len(speeds) if speeds else 0.0
+    _, raw_dir = uv_to_speed_dir(mean_u, mean_v)
+    raw_sp = sum(speeds) / len(speeds) if speeds else 0.0
     n = len(per_model)
     vt_jst = datetime.fromisoformat(valid_time).astimezone(JST) if valid_time else None
+
+    # ── 判定に使う代表値: 補正済み加重平均(取れなければ単純平均) ──
+    w_speed, w_dir = corrected_weighted(chosen, vt_jst)
+    speed = round(w_speed if w_speed is not None else raw_sp, 1)
+    dir_deg = w_dir if w_dir is not None else raw_dir
+    source = "corrected_weighted" if w_speed is not None else "simple_mean"
+
     return {
         "fetched_at": fa,
         "valid_time_jst": vt_jst,
-        "mean_speed_ms": round(mean_sp, 1),
-        "mean_dir_deg": round(mean_dir),
-        "mean_compass": compass16(mean_dir),
-        "agree": f"{n_sail}/{n}",
+        "mean_speed_ms": speed,          # 判定にも表示にも使う代表風速
+        "mean_dir_deg": round(dir_deg),
+        "mean_compass": compass16(dir_deg),
+        "speed_source": source,
+        "raw_mean_speed_ms": round(raw_sp, 1),   # 補正前の単純平均(参考)
+        "agree": f"{n_sail}/{n}",                # 参考表示。判定には使わない
         "n_sail": n_sail, "n_models": n,
-        "sailable": n_sail >= MIN_MODELS_AGREE,
+        "sailable": SAIL_MIN_MS <= speed <= SAIL_MAX_MS,
         "per_model": per_model,
     }
 
