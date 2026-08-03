@@ -146,10 +146,13 @@ def main():
     ap.add_argument("--server", default=NTFY_SERVER)
     ap.add_argument("--dry-run", action="store_true", help="送信せず内容だけ表示")
     args = ap.parse_args()
-    if not args.dry_run and "CHANGE-ME" in args.topic:
+    # CI から未設定の Secret を渡すと空文字で来る。空トピックへ POST すると
+    # ntfy が 400 を返して黙って失敗するので、既定トピックに落とす。
+    topic = args.topic.strip() or NTFY_TOPIC
+    if not args.dry_run and "CHANGE-ME" in topic:
         print("先に NTFY_TOPIC を変更するか --topic を指定してください。", file=sys.stderr)
         sys.exit(1)
-    run(args.db, args.topic, args.server, args.dry_run)
+    run(args.db, topic, args.server, args.dry_run)
 
 
 if __name__ == "__main__":

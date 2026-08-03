@@ -63,10 +63,12 @@ jobs:
       - name: ダッシュボード生成 (docs/index.html, docs/forecast.png)
         run: python generate_dashboard.py
 
-      # ── 任意: 走れそうなら ntfy でスマホ通知 ──
-      # Secrets に NTFY_TOPIC を登録し、下のコメントを外す
-      # - name: 通知
-      #   run: python notify.py --topic "${{ secrets.NTFY_TOPIC }}"
+      # ── 走れそうなら ntfy でスマホ通知 ──
+      # Secrets の NTFY_TOPIC でトピックを差し替えられる。未設定なら
+      # notify.py の既定トピックを使う(空文字を渡しても既定に落ちる)。
+      # 重複抑止の notify_log は wind.db に書かれるので、次の commit で永続化される。
+      - name: 通知 (出走できそうなら ntfy)
+        run: python notify.py --topic "${{ secrets.NTFY_TOPIC }}"
 
       - name: コミット & プッシュ
         run: |
