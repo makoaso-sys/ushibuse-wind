@@ -505,10 +505,28 @@ def make_chart(conn, fa: str, path: str) -> None:
            WHERE fetched_at=? AND lead_hours<=?
            ORDER BY valid_time""", (fa, MAX_LEAD)).fetchall()
 
-    # jma_msmの気温（ローカル精度が高い）
-    temp_map = {r["valid_time"]: r["temperature_2m_c"] for r in conn.execute(
-        """SELECT valid_time, temperature_2m_c FROM forecasts
-           WHERE fetched_at=? AND model='jma_msm' AND lead_hours<=?
+    # 気温は jma_msm と gfs_seamless の平均を使う。
+    #
+    # 2026-07-27〜08-13 の実測照合(18日/385点, lead 3〜27h)より。単独の MAE は
+    # gfs 1.05 / msm 1.09 °C でこの2つに有意差はない(対応のある95%CI が0をまたぐ)が、
+    # 平均すると 0.97 °C まで下がり、両者に対して有意に良い(vs gfs -0.085
+    # [-0.142,-0.029], vs msm -0.124 [-0.178,-0.070])。全 lead 帯で勝ち、
+    # 大外し(|誤差|>3°C)も 14/385 と最小。誤差の向きが逆(gfs bias -0.12,
+    # msm +0.31)なので打ち消し合う。
+    #
+    # 他候補は不採用: icon/jma_gsm/ecmwf は有意に劣る。tenki.jp は時刻別バイアス
+    # 補正をすれば 0.99 まで下がるが、改善の正体は系統誤差(11時 +2.5°C)で補正の
+    # 維持が要るうえ、他サイトのスクレイピングに依存するので割に合わない。
+    # 検証は analysis/temp_source_compare.py と temp-source-compare.yml。
+    #
+    # AVG は NULL を無視するので、片方のモデルの気温が欠けた回でも値が出る
+    # (jma_msm は他モデルより気温の欠損がやや多い)。
+    temp_map = {r["valid_time"]: r["temp_c"] for r in conn.execute(
+        """SELECT valid_time, AVG(temperature_2m_c) AS temp_c FROM forecasts
+           WHERE fetched_at=? AND model IN ('jma_msm','gfs_seamless')
+             AND lead_hours<=?
+           GROUP BY valid_time
+           HAVING temp_c IS NOT NULL
            ORDER BY valid_time""", (fa, MAX_LEAD)).fetchall()}
 
     # valid_time ごとに集約
