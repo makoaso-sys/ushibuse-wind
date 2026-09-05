@@ -77,3 +77,46 @@ jobs:
           git add -A docs wind.db
           git commit -m "update forecast $(date -u +%FT%TZ)" || echo "no changes"
           git push
+
+      # ── 限定公開への移行 Phase 1: Cloudflare Pages にも同じ docs/ を配る ──
+      # 目的は「並行運用」。GitHub Pages は従来どおり更新し続けたまま、同一の
+      # 生成物を Cloudflare にも出す。閲覧制限(Cloudflare Access)を当てるのは
+      # Phase 2 なので、この時点では両者は内容もアクセス性も同じ。
+      # 手順と切り替え計画は Privateリポ(makoaso-sys/wind)の
+      # CLOUDFLARE_MIGRATION.md を参照。
+      #
+      # 「コミット & プッシュ」の後ろに置くこと。移行先が落ちても、現行の公開先
+      # である GitHub Pages の更新を巻き添えにしない。
+      #
+      # Secrets 未設定なら何もせず素通りする。Cloudflare 側の準備が整うまで、
+      # このワークフローの挙動は一切変わらない。
+      - name: "Cloudflare Pages へデプロイ (Phase 1: GitHub Pages と並行)"
+        id: cfpages
+        # continue-on-error: 移行作業中の失敗で、本番の更新ジョブを赤くしない。
+        # 実際の失敗は下の outcome 判定で拾う。
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Cloudflare の Secrets が未設定のためスキップ (Phase 1 未開始)"
+            exit 0
+          fi
+          # --branch: プロジェクトの本番ブランチと一致させる。ここを外すと
+          # プレビュー配置になり、本番URLが更新されない。
+          npx --yes wrangler@4 pages deploy docs \
+            --project-name=ushibuse-wind \
+            --branch=main \
+            --commit-dirty=true
+
+      # continue-on-error はステップの結論を success に書き換えるので、
+      # outcome を見ないと失敗に気付けない (fetch-obs.yml と同じ扱い)。
+      - name: Cloudflare へのデプロイに失敗していたら警告する
+        if: steps.cfpages.outcome == 'failure'
+        run: |
+          echo "::warning title=Cloudflare Pages へのデプロイに失敗::" \
+               "現行の GitHub Pages は正常に更新済み。Cloudflare 側だけ前回のまま。"
+          echo "### ⚠ Cloudflare Pages へのデプロイに失敗" >> "$GITHUB_STEP_SUMMARY"
+          echo "現行の公開先(GitHub Pages)は正常に更新済み。移行先だけ前回のまま。" \
+               >> "$GITHUB_STEP_SUMMARY"
