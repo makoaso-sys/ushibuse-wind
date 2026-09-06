@@ -67,7 +67,13 @@ jobs:
       # Secrets の NTFY_TOPIC でトピックを差し替えられる。未設定なら
       # notify.py の既定トピックを使う(空文字を渡しても既定に落ちる)。
       # 重複抑止の notify_log は wind.db に書かれるので、次の commit で永続化される。
-      - name: 通知 (出走できそうなら ntfy)
+      # LINE_CHANNEL_ACCESS_TOKEN / LINE_TO が未設定なら LINE へは送らず、
+      # 従来どおり ntfy だけで動く。設定手順は README_phase6.md の
+      # 「3. LINE で特定の人に通知する」。
+      - name: 通知 (出走できそうなら ntfy / LINE)
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_TO: ${{ secrets.LINE_TO }}
         run: python notify.py --topic "${{ secrets.NTFY_TOPIC }}"
 
       - name: コミット & プッシュ
