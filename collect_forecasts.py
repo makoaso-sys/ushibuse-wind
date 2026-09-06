@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -80,6 +82,12 @@ WIND_SPEED_UNIT = "ms"     # m/s で取得(u/v 計算が素直。1kt = 0.514 m/s
 DB_PATH = "wind.db"
 API_URL = "https://api.open-meteo.com/v1/forecast"
 HTTP_TIMEOUT = 30          # seconds
+
+# Open-Meteo は稀に障害を起こす(2026-09-06 09:01 UTC の例では全モデルが数十msで
+# 500 や空bodyを返した)。数秒空けて数回粘れば大抵は復旧するので、1回の失敗で
+# その回の取得を丸ごと落とさない。
+FETCH_ATTEMPTS = 3         # 1モデルあたりの試行回数(初回 + リトライ2回)
+RETRY_WAIT_SEC = 5         # 初回リトライまでの待ち(秒)。試行ごとに延ばす
 
 
 # ============================================================
@@ -241,6 +249,38 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     return rows
 
 
+def _request_payload(model: str, session: requests.Session,
+                     params: dict) -> tuple[dict | None, bool]:
+    """1回だけ API を叩く。(payload, リトライする価値があるか) を返す。
+
+    payload が None なら失敗。時間を置けば直る類い(接続断・429・5xx・空body)は
+    retryable=True、パラメータ側の誤り(モデル識別子の変更など 4xx)は False。
+    """
+    try:
+        resp = session.get(API_URL, params=params, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"  [{model}] リクエスト失敗: {e}", file=sys.stderr)
+        return None, True
+
+    if resp.status_code != 200:
+        print(f"  [{model}] HTTP {resp.status_code}: {resp.text[:160]}",
+              file=sys.stderr)
+        return None, resp.status_code == 429 or resp.status_code >= 500
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        # 200 でも body が空や非JSONで返ることがある。障害中の Open-Meteo で実際に
+        # 起き、ここで例外が漏れて取得ジョブごと停止した(2026-09-06)。
+        print(f"  [{model}] 応答がJSONでない: {resp.text[:160]!r}", file=sys.stderr)
+        return None, True
+
+    if payload.get("error"):
+        print(f"  [{model}] API エラー: {payload.get('reason')}", file=sys.stderr)
+        return None, False
+    return payload, False
+
+
 def fetch_model(model: str, fetched_at: datetime,
                 session: requests.Session) -> list[dict]:
     """1モデル分を取得してパース。失敗時は空リストを返す(全体は止めない)。"""
@@ -254,21 +294,17 @@ def fetch_model(model: str, fetched_at: datetime,
         "wind_speed_unit": WIND_SPEED_UNIT,
         "timezone": "UTC",
     }
-    try:
-        resp = session.get(API_URL, params=params, timeout=HTTP_TIMEOUT)
-    except requests.RequestException as e:
-        print(f"  [{model}] リクエスト失敗: {e}", file=sys.stderr)
-        return []
-
-    if resp.status_code != 200:
-        print(f"  [{model}] HTTP {resp.status_code}: {resp.text[:160]}",
-              file=sys.stderr)
-        return []
-    payload = resp.json()
-    if payload.get("error"):
-        print(f"  [{model}] API エラー: {payload.get('reason')}", file=sys.stderr)
-        return []
-    return parse_payload(model, fetched_at, payload)
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        payload, retryable = _request_payload(model, session, params)
+        if payload is not None:
+            return parse_payload(model, fetched_at, payload)
+        if not retryable or attempt == FETCH_ATTEMPTS:
+            return []
+        wait = RETRY_WAIT_SEC * attempt
+        print(f"  [{model}] {wait}秒後に再試行 "
+              f"({attempt}/{FETCH_ATTEMPTS - 1})", file=sys.stderr)
+        time.sleep(wait)
+    return []
 
 
 # ============================================================
@@ -310,7 +346,8 @@ def demo_payload(model: str, fetched_at: datetime) -> dict:
 # メイン
 # ============================================================
 
-def collect(db_path: str, demo: bool = False) -> None:
+def collect(db_path: str, demo: bool = False) -> int:
+    """取得して保存し、データが取れたモデル数を返す。"""
     fetched_at = datetime.now(timezone.utc).replace(microsecond=0)
     conn = init_db(db_path)
     session = requests.Session()
@@ -319,6 +356,7 @@ def collect(db_path: str, demo: bool = False) -> None:
     print(f"=== 取得開始 {fetched_at.isoformat()} "
           f"({'DEMO' if demo else 'LIVE'}) ===")
     total_new = 0
+    ok_models = 0
     for model in MODELS:
         if demo:
             rows = parse_payload(model, fetched_at, demo_payload(model, fetched_at))
@@ -329,13 +367,16 @@ def collect(db_path: str, demo: bool = False) -> None:
             continue
         new = insert_rows(conn, rows)
         total_new += new
+        ok_models += 1
         leads = [r["lead_hours"] for r in rows]
         print(f"  [{model}] {len(rows)}点取得 / {new}件新規 "
               f"(lead {min(leads):.0f}〜{max(leads):.0f}h)")
 
-    print(f"=== 完了: 新規 {total_new} 件 -> {db_path} ===")
+    print(f"=== 完了: 新規 {total_new} 件 / "
+          f"{ok_models}/{len(MODELS)} モデル成功 -> {db_path} ===")
     _print_targets(conn, fetched_at)
     conn.close()
+    return ok_models
 
 
 def _print_targets(conn: sqlite3.Connection, fetched_at: datetime) -> None:
@@ -359,13 +400,30 @@ def _print_targets(conn: sqlite3.Connection, fetched_at: datetime) -> None:
                   f"{sp:4.1f}m/s({kn})  {di:5.0f}°")
 
 
+def _warn_no_data() -> None:
+    """全モデル失敗を Actions のログとサマリに残す(ジョブは落とさない)。
+
+    ここで exit 1 にすると後続のダッシュボード生成ごと止まり、既存 wind.db から
+    作れるはずのページまで更新されなくなる。継続しつつ気付ける形にする
+    (continue-on-error と同じで、黙って success にしないのが肝)。
+    """
+    msg = ("全モデルの取得に失敗した。予測は前回取得分のまま "
+           "(Open-Meteo 側の障害が疑われる)。")
+    print(f"::warning title=予測データを取得できず::{msg}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write(f"### ⚠ 予測データを取得できず\n{msg}\n")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="牛臥海岸 風予測 フェーズ1 取得")
     ap.add_argument("--db", default=DB_PATH, help="SQLite ファイルパス")
     ap.add_argument("--demo", action="store_true",
                     help="ネット不要の合成データで動作確認する")
     args = ap.parse_args()
-    collect(args.db, demo=args.demo)
+    if collect(args.db, demo=args.demo) == 0:
+        _warn_no_data()
 
 
 if __name__ == "__main__":
