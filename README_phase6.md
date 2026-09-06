@@ -145,10 +145,17 @@ LINE で飛ばしたい**場合は、LINE公式アカウントから push する
 export LINE_CHANNEL_ACCESS_TOKEN="長期トークン"
 export LINE_TO="Uxxxxxxxx...,Cyyyyyyyy..."   # 複数可
 
+python notify.py --test-send  # 判定を通さずテスト通知を1通送る(疎通確認)
 python notify.py --dry-run    # 送信せず、宛先ごとに「送る/送信済み」を表示
 python notify.py              # ntfy と LINE の両方へ
 python notify.py --no-ntfy    # LINE だけへ
 ```
+
+設定した直後は `--test-send` で確かめる。判定も重複抑止も通さないので、
+**出走できそうな日でなくても届くかどうかが分かる**(届かない場合、LINE 側の
+原因はたいてい「公式アカウントを友だち追加していない」= 403)。
+GitHub Actions からは **notify-test** ワークフローを手動実行すると同じことができる
+(予測取得もコミットもしないので、何度回しても本番の生成物に影響しない)。
 
 GitHub Actions から動かす場合は、リポジトリの
 **Settings → Secrets and variables → Actions** に

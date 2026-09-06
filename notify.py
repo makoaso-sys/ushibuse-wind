@@ -160,6 +160,35 @@ def parse_line_dests(raw: str) -> list[str]:
 
 
 # ============================================================
+# 疎通確認
+# ============================================================
+def send_test(topic: str, server: str, use_ntfy: bool,
+              line_token: str, line_dests: list[str]) -> int:
+    """設定した宛先へテスト通知を1通ずつ送り、失敗した数を返す。
+
+    判定も重複抑止も通さない。トークンや宛先IDを入れた直後に、実際に届くか
+    (LINE なら友だち追加が済んでいるか)を確かめるためのもの。
+    """
+    now = datetime.now(pc.JST).strftime("%m/%d %H:%M")
+    title = "🧪 通知テスト"
+    body = (f"牛臥風予測の通知テストです({now} JST)。\n"
+            f"これが届けば設定は完了。以後は出走できそうな時だけ通知が届く。")
+    failed = 0
+    if use_ntfy:
+        ok = send_ntfy(server, topic, title, body, "test")
+        print(f"  ntfy({topic}): {'OK' if ok else '失敗'}")
+        failed += 0 if ok else 1
+    for dest in line_dests:
+        ok = send_line(line_token, dest, f"{title}\n{body}")
+        print(f"  LINE {dest_digest(dest)}: {'OK' if ok else '失敗'}")
+        failed += 0 if ok else 1
+    if not use_ntfy and not line_dests:
+        print("送信先がひとつも設定されていない。", file=sys.stderr)
+        return 1
+    return failed
+
+
+# ============================================================
 # メイン
 # ============================================================
 def run(db_path: str, topic: str, server: str, dry: bool,
@@ -245,6 +274,8 @@ def main():
     ap.add_argument("--topic", default=NTFY_TOPIC)
     ap.add_argument("--server", default=NTFY_SERVER)
     ap.add_argument("--dry-run", action="store_true", help="送信せず内容だけ表示")
+    ap.add_argument("--test-send", action="store_true",
+                    help="判定を通さずテスト通知を1通送る(設定直後の疎通確認用)")
     ap.add_argument("--no-ntfy", action="store_true",
                     help="ntfy へは送らない(LINE だけ使う)")
     ap.add_argument("--line-token", default="",
@@ -272,6 +303,11 @@ def main():
     if args.no_ntfy and not line_dests:
         print("--no-ntfy だが LINE の宛先もない。通知先がゼロ。", file=sys.stderr)
         sys.exit(1)
+
+    if args.test_send:
+        # 予測データを読まないので、DB が無くても・空でも動く
+        sys.exit(send_test(topic, args.server, not args.no_ntfy,
+                           line_token, line_dests))
 
     run(args.db, topic, args.server, args.dry_run,
         use_ntfy=not args.no_ntfy, line_token=line_token, line_dests=line_dests)

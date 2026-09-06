@@ -1,0 +1,27 @@
+name: notify-test
+
+# 通知の疎通確認だけを行う。予測取得もダッシュボード生成もコミットもしないので、
+# 何度実行しても本番の生成物には触らない。Secrets を入れ替えた直後に回す想定。
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # notify.py と phase6_common.py は requests 以外は標準ライブラリしか使わない。
+      # requirements.txt 全部(matplotlib 等)を入れる必要はない。
+      - name: 依存インストール
+        run: pip install requests
+
+      - name: テスト通知を送る
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_TO: ${{ secrets.LINE_TO }}
+        run: python notify.py --test-send --topic "${{ secrets.NTFY_TOPIC }}"
