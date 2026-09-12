@@ -73,6 +73,16 @@ HOURLY_VARS = [
     "wind_direction_925hPa",
     "wind_speed_850hPa",
     "wind_direction_850hPa",
+    # 気圧面の気温と高度。静的安定度 N(ブラント・バイサラ振動数)を出すために要る。
+    #   θ = T(1000/p)^0.286、N^2 = (g/θ)(dθ/dz)
+    # N はフルード数 Fr = U/(N*h) の分母で、「風が尾根を越えるか迂回するか」を表す。
+    # h は沼津アルプス 400m と愛鷹 1500m の2つを想定(analysis/README.md §9)。
+    # 高度は気圧面の実際の高さなので、2層の θ の差を取る z 座標として使う。
+    # 4モデルとも取得できることを実機で確認済み(2026-09-12)。
+    "temperature_925hPa",
+    "temperature_850hPa",
+    "geopotential_height_925hPa",
+    "geopotential_height_850hPa",
 ]
 
 FORECAST_DAYS = 3          # 12〜24h をカバーするのに十分(MSM の地平線にも収まる)
@@ -141,6 +151,10 @@ _MIGRATIONS = [
     "ALTER TABLE forecasts ADD COLUMN wind_dir_925_deg REAL",
     "ALTER TABLE forecasts ADD COLUMN wind_speed_850_ms REAL",
     "ALTER TABLE forecasts ADD COLUMN wind_dir_850_deg REAL",
+    "ALTER TABLE forecasts ADD COLUMN temp_925_c REAL",
+    "ALTER TABLE forecasts ADD COLUMN temp_850_c REAL",
+    "ALTER TABLE forecasts ADD COLUMN gph_925_m REAL",
+    "ALTER TABLE forecasts ADD COLUMN gph_850_m REAL",
 ]
 
 INSERT_SQL = """
@@ -151,7 +165,8 @@ INSERT OR IGNORE INTO forecasts
      weather_code, precipitation_prob, precipitation_mm,
      wind_gusts_ms, latitude, longitude,
      wind_speed_925_ms, wind_dir_925_deg,
-     wind_speed_850_ms, wind_dir_850_deg)
+     wind_speed_850_ms, wind_dir_850_deg,
+     temp_925_c, temp_850_c, gph_925_m, gph_850_m)
 VALUES
     (:model, :fetched_at, :valid_time, :lead_hours,
      :wind_speed_ms, :wind_dir_deg, :wind_u, :wind_v,
@@ -159,7 +174,8 @@ VALUES
      :weather_code, :precipitation_prob, :precipitation_mm,
      :wind_gusts_ms, :latitude, :longitude,
      :wind_speed_925_ms, :wind_dir_925_deg,
-     :wind_speed_850_ms, :wind_dir_850_deg)
+     :wind_speed_850_ms, :wind_dir_850_deg,
+     :temp_925_c, :temp_850_c, :gph_925_m, :gph_850_m)
 """
 
 
@@ -210,6 +226,10 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     dir925 = hourly.get("wind_direction_925hPa") or []
     sp850 = hourly.get("wind_speed_850hPa") or []
     dir850 = hourly.get("wind_direction_850hPa") or []
+    t925 = hourly.get("temperature_925hPa") or []
+    t850 = hourly.get("temperature_850hPa") or []
+    g925 = hourly.get("geopotential_height_925hPa") or []
+    g850 = hourly.get("geopotential_height_850hPa") or []
 
     rows: list[dict] = []
     for i, t in enumerate(times):
@@ -245,6 +265,10 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
             "wind_dir_925_deg": _get(dir925, i),
             "wind_speed_850_ms": _get(sp850, i),
             "wind_dir_850_deg": _get(dir850, i),
+            "temp_925_c": _get(t925, i),
+            "temp_850_c": _get(t850, i),
+            "gph_925_m": _get(g925, i),
+            "gph_850_m": _get(g850, i),
         })
     return rows
 
