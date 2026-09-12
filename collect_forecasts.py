@@ -83,6 +83,17 @@ HOURLY_VARS = [
     "temperature_850hPa",
     "geopotential_height_925hPa",
     "geopotential_height_850hPa",
+    # 気圧面の相対湿度。上の気温と合わせて**湿潤**の安定度(湿潤ブラント・バイサラ)を出せる。
+    # 雲の中では乾燥 N より小さくなるため、Fr = U/(N*h) の分母が変わり「越えるか迂回するか」
+    # の判定が変わる。海風は湿っていることが多いのでこの地点では効きうる。
+    "relative_humidity_925hPa",
+    "relative_humidity_850hPa",
+    # 海風の駆動力まわり。日射が海陸温度差を作り、雲量がそれを鈍らせる。
+    # ⚠️ jma_gsm は shortwave_radiation を全時刻 null で返す(2026-09-12 実機確認)。
+    # 不具合ではなくモデル側に無いだけなので、NULL のまま保存して下流で落とす。
+    # 他3モデル(jma_msm / ecmwf_ifs025 / gfs_seamless)は取得できる。
+    "shortwave_radiation",
+    "cloud_cover",
 ]
 
 FORECAST_DAYS = 3          # 12〜24h をカバーするのに十分(MSM の地平線にも収まる)
@@ -155,6 +166,10 @@ _MIGRATIONS = [
     "ALTER TABLE forecasts ADD COLUMN temp_850_c REAL",
     "ALTER TABLE forecasts ADD COLUMN gph_925_m REAL",
     "ALTER TABLE forecasts ADD COLUMN gph_850_m REAL",
+    "ALTER TABLE forecasts ADD COLUMN rh_925_pct REAL",
+    "ALTER TABLE forecasts ADD COLUMN rh_850_pct REAL",
+    "ALTER TABLE forecasts ADD COLUMN shortwave_wm2 REAL",
+    "ALTER TABLE forecasts ADD COLUMN cloud_cover_pct REAL",
 ]
 
 INSERT_SQL = """
@@ -166,7 +181,8 @@ INSERT OR IGNORE INTO forecasts
      wind_gusts_ms, latitude, longitude,
      wind_speed_925_ms, wind_dir_925_deg,
      wind_speed_850_ms, wind_dir_850_deg,
-     temp_925_c, temp_850_c, gph_925_m, gph_850_m)
+     temp_925_c, temp_850_c, gph_925_m, gph_850_m,
+     rh_925_pct, rh_850_pct, shortwave_wm2, cloud_cover_pct)
 VALUES
     (:model, :fetched_at, :valid_time, :lead_hours,
      :wind_speed_ms, :wind_dir_deg, :wind_u, :wind_v,
@@ -175,7 +191,8 @@ VALUES
      :wind_gusts_ms, :latitude, :longitude,
      :wind_speed_925_ms, :wind_dir_925_deg,
      :wind_speed_850_ms, :wind_dir_850_deg,
-     :temp_925_c, :temp_850_c, :gph_925_m, :gph_850_m)
+     :temp_925_c, :temp_850_c, :gph_925_m, :gph_850_m,
+     :rh_925_pct, :rh_850_pct, :shortwave_wm2, :cloud_cover_pct)
 """
 
 
@@ -230,6 +247,10 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
     t850 = hourly.get("temperature_850hPa") or []
     g925 = hourly.get("geopotential_height_925hPa") or []
     g850 = hourly.get("geopotential_height_850hPa") or []
+    rh925 = hourly.get("relative_humidity_925hPa") or []
+    rh850 = hourly.get("relative_humidity_850hPa") or []
+    swr = hourly.get("shortwave_radiation") or []
+    cc = hourly.get("cloud_cover") or []
 
     rows: list[dict] = []
     for i, t in enumerate(times):
@@ -269,6 +290,10 @@ def parse_payload(model: str, fetched_at: datetime, payload: dict) -> list[dict]
             "temp_850_c": _get(t850, i),
             "gph_925_m": _get(g925, i),
             "gph_850_m": _get(g850, i),
+            "rh_925_pct": _get(rh925, i),
+            "rh_850_pct": _get(rh850, i),
+            "shortwave_wm2": _get(swr, i),
+            "cloud_cover_pct": _get(cc, i),
         })
     return rows
 
