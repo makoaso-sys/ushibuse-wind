@@ -2,7 +2,9 @@ name: forecast-dashboard
 
 # クラウド(GitHub)上で定期実行する。あなたのPCの電源状態に依存しない。
 on:
-  workflow_dispatch:           # cron-job.org または Actionsタブから手動実行
+  schedule:
+      - cron: '0 */3 * * *'  # 3時間おきにネイティブ実行。cron-job.org停止時のフォールバック
+        workflow_dispatch:           # cron-job.org または Actionsタブから手動実行
 
 permissions:
   contents: write              # 生成物を同じリポジトリに push するため
