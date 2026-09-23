@@ -4,7 +4,7 @@ name: forecast-dashboard
 on:
   schedule:
       - cron: '0 */3 * * *'  # 3時間おきにネイティブ実行。cron-job.org停止時のフォールバック
-        workflow_dispatch:           # cron-job.org または Actionsタブから手動実行
+  workflow_dispatch:           # cron-job.org または Actionsタブから手動実行
 
 permissions:
   contents: write              # 生成物を同じリポジトリに push するため
