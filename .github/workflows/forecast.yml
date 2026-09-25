@@ -35,31 +35,47 @@ jobs:
       - name: バイアス補正データをプライベートリポジトリから取得
         env:
           TOKEN: ${{ secrets.PRIVATE_WIND_TOKEN }}
+        # 取得に失敗しても補正なしで走り切る方針は変えない(ダッシュボードは出す)。
+        # ただし ::warning を出して Summary に残す。以前は `|| echo` だったため
+        # PAT が失効してもステップは success のままで、判定が全モデル単純平均に
+        # 落ちていることに気づけなかった。2026-09-25 に PAT 更新した際に発覚。
         run: |
-          if [ -n "$TOKEN" ]; then
-            curl -fsSL \
-              -H "Authorization: token $TOKEN" \
-              "https://raw.githubusercontent.com/makoaso-sys/wind/main/ushibuse-wind/calibration.json" \
-              -o calibration.json \
-              && echo "calibration.json を取得しました" \
-              || echo "calibration.json の取得に失敗しました（補正なしで実行）"
+          if [ -z "$TOKEN" ]; then
+            echo "::warning title=PRIVATE_WIND_TOKEN が未設定::補正なし(全モデル単純平均)で実行する"
+            exit 0
+          fi
+          if curl -fsSL \
+               -H "Authorization: token $TOKEN" \
+               "https://raw.githubusercontent.com/makoaso-sys/wind/main/ushibuse-wind/calibration.json" \
+               -o calibration.json
+          then
+            echo "calibration.json を取得しました"
           else
-            echo "PRIVATE_WIND_TOKEN が未設定のため補正なしで実行"
+            # -f でも空ファイルが残ることがある。壊れた JSON を掴ませない。
+            rm -f calibration.json
+            echo "::warning title=calibration.json の取得に失敗::PAT 失効の可能性。補正なし(全モデル単純平均)で実行する"
           fi
 
       - name: 観測データをプライベートリポジトリから取得 (実測オーバーレイ用)
         env:
           TOKEN: ${{ secrets.PRIVATE_WIND_TOKEN }}
+        # 上と同じ理由で ::warning にする。こちらが落ちても実測オーバーレイが
+        # 消えるだけで予測は出るので、やはり無言で劣化しやすい。
         run: |
-          if [ -n "$TOKEN" ]; then
-            curl -fsSL \
-              -H "Authorization: token $TOKEN" \
-              "https://raw.githubusercontent.com/makoaso-sys/wind/main/ushibuse-wind/observations.db" \
-              -o observations.db \
-              && echo "observations.db を取得しました（直近12hの実測を重ねる）" \
-              || echo "observations.db の取得に失敗しました（実測オーバーレイなしで実行）"
+          if [ -z "$TOKEN" ]; then
+            echo "::warning title=PRIVATE_WIND_TOKEN が未設定::実測オーバーレイなしで実行する"
+            exit 0
+          fi
+          if curl -fsSL \
+               -H "Authorization: token $TOKEN" \
+               "https://raw.githubusercontent.com/makoaso-sys/wind/main/ushibuse-wind/observations.db" \
+               -o observations.db
+          then
+            echo "observations.db を取得しました（直近12hの実測を重ねる）"
           else
-            echo "PRIVATE_WIND_TOKEN が未設定のため実測オーバーレイなしで実行"
+            # 途中まで書かれた DB を sqlite に開かせない。
+            rm -f observations.db
+            echo "::warning title=observations.db の取得に失敗::PAT 失効の可能性。実測オーバーレイなしで実行する"
           fi
 
       - name: ダッシュボード生成 (docs/index.html, docs/forecast.png)
