@@ -59,6 +59,10 @@ requirements.txt            # requests, matplotlib, numpy
 - **`wind.db` を毎回コミット**するためリポジトリは少しずつ増える。フェーズ2の学習用に
   履歴を残す設計。履歴が不要なら、ワークフローの `git add` から `wind.db` を外せばよい
   (表示は毎回最新を取得するので問題ない)。古いスナップショットは定期的に間引いてもよい。
+- **GitHub は 100MB 超のファイルを push できない**(GH001)。2026-10 に wind.db が到達したため、
+  ワークフローは毎回 `archive_db.py` で先月以前の行を `archive/forecasts_YYYY-MM.db` へ移す。
+  wind.db は今月分(約30MB以下)だけになり、締まった月のファイルは以後変わらない。
+  `calibrate.py` は `archive/` も自動で読むので、補正には全履歴が使われる。
 
 ## スマホ通知も同時に出す(任意)
 

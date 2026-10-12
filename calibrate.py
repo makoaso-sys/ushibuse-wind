@@ -18,7 +18,9 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 
@@ -27,6 +29,7 @@ import pandas as pd
 
 DB_PATH  = "wind.db"
 OUT_PATH = "calibration.json"
+ARCHIVE_DIR = "archive"   # archive_db.py が先月以前を移す先(forecasts_YYYY-MM.db)
 
 
 def load_obs(csv_path: str) -> pd.DataFrame:
@@ -144,16 +147,22 @@ def circ_diff(a: pd.Series, b: pd.Series) -> pd.Series:
 
 
 def calibrate(obs: pd.DataFrame, db_path: str = DB_PATH, out_path: str = OUT_PATH,
-              obs_sources: list[str] | None = None) -> None:
+              obs_sources: list[str] | None = None,
+              archive_dir: str = ARCHIVE_DIR) -> None:
     print(f"観測データ: {len(obs)} 時間点  ({obs.index[0].date()} ~ {obs.index[-1].date()} UTC)")
 
-    conn = sqlite3.connect(db_path)
-    fcast = pd.read_sql(
-        # lead>=0 の「本物の予測」のみで補正する(過去hourのナウキャスト相当は除外)
-        "SELECT model, valid_time, lead_hours, wind_speed_ms, wind_dir_deg "
-        "FROM forecasts WHERE lead_hours >= 0 ORDER BY model, valid_time",
-        conn)
-    conn.close()
+    # wind.db は今月分だけ。先月以前は archive/ にあるので合わせて読む。
+    paths = sorted(glob.glob(os.path.join(archive_dir, "forecasts_*.db"))) + [db_path]
+    frames = []
+    for p in paths:
+        conn = sqlite3.connect(p)
+        frames.append(pd.read_sql(
+            # lead>=0 の「本物の予測」のみで補正する(過去hourのナウキャスト相当は除外)
+            "SELECT model, valid_time, lead_hours, wind_speed_ms, wind_dir_deg "
+            "FROM forecasts WHERE lead_hours >= 0", conn))
+        conn.close()
+    fcast = pd.concat(frames, ignore_index=True).sort_values(["model", "valid_time"])
+    print(f"予測データ: {len(fcast)} 行 ({len(paths)} ファイル)")
 
     fcast["valid_time"] = pd.to_datetime(fcast["valid_time"]).dt.tz_localize(None)
     merged = fcast.merge(
@@ -285,11 +294,14 @@ def main() -> None:
                     help="observations.db パス(複数指定可・継続取得用)")
     ap.add_argument("--db",  default=DB_PATH,  help="wind.db パス")
     ap.add_argument("--out", default=OUT_PATH, help="出力 JSON パス")
+    ap.add_argument("--archive-dir", default=ARCHIVE_DIR,
+                    help="月別アーカイブ(forecasts_YYYY-MM.db)のディレクトリ")
     args = ap.parse_args()
     if not args.obs and not args.obs_db:
         ap.error("--obs か --obs-db を少なくとも1つ指定してください")
     obs = load_obs_sources(args.obs, args.obs_db)
-    calibrate(obs, args.db, args.out, obs_sources=args.obs + args.obs_db)
+    calibrate(obs, args.db, args.out, obs_sources=args.obs + args.obs_db,
+              archive_dir=args.archive_dir)
 
 
 if __name__ == "__main__":
