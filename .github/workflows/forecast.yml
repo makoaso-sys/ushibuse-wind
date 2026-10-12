@@ -94,11 +94,18 @@ jobs:
           LINE_TO: ${{ secrets.LINE_TO }}
         run: python notify.py --topic "${{ secrets.NTFY_TOPIC }}"
 
+      # GitHub は 100MB 超のファイルを拒否する(2026-10-12 に wind.db が到達して
+      # push が GH001 で失敗した)。先月以前の行を archive/forecasts_YYYY-MM.db へ
+      # 移し、wind.db は今月分だけにする。通知の後に置くのは notify_log を
+      # 書き終えてから VACUUM するため。
+      - name: 古い予測を月別アーカイブへ移す
+        run: python archive_db.py
+
       - name: コミット & プッシュ
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A docs wind.db
+          git add -A docs wind.db archive
           git commit -m "update forecast $(date -u +%FT%TZ)" || echo "no changes"
           git push
 
