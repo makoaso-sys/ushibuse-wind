@@ -161,8 +161,9 @@ def corrected_weighted(chosen: dict[str, dict], vt_jst: datetime | None,
         if r["wind_u"] is not None and dwt > 0:
             b_rad = math.radians(mc.get("hourly_dir_bias", {}).get(
                 hour, mc.get("dir_bias", 0.0)))
-            u_c = r["wind_u"] * math.cos(-b_rad) - r["wind_v"] * math.sin(-b_rad)
-            v_c = r["wind_u"] * math.sin(-b_rad) + r["wind_v"] * math.cos(-b_rad)
+            # バイアス = 予報 - 実測 なので、補正後の風向は θ-b。u=-s·sinθ, v=-s·cosθ へ展開した形。
+            u_c = r["wind_u"] * math.cos(b_rad) - r["wind_v"] * math.sin(b_rad)
+            v_c = r["wind_u"] * math.sin(b_rad) + r["wind_v"] * math.cos(b_rad)
             wu += dwt * u_c; wv += dwt * v_c; wd_tot += dwt
     speed = ws_sum / w_tot if w_tot > 0 else None
     if wd_tot > 0 and (wu != 0.0 or wv != 0.0):

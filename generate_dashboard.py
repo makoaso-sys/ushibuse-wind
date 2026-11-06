@@ -445,8 +445,9 @@ def make_chart(conn, fa: str, path: str) -> None:
                 hdb = cal["models"][m].get("hourly_dir_bias", {})
                 bias_deg = hdb.get(str(ti.hour), cal["models"][m]["dir_bias"])
                 bias_rad = math.radians(bias_deg)
-                u_r = r["wind_u"] * math.cos(-bias_rad) - r["wind_v"] * math.sin(-bias_rad)
-                v_r = r["wind_u"] * math.sin(-bias_rad) + r["wind_v"] * math.cos(-bias_rad)
+                # バイアス = 予報 - 実測 なので、補正後の風向は θ-b(phase6_common と同じ式)。
+                u_r = r["wind_u"] * math.cos(bias_rad) - r["wind_v"] * math.sin(bias_rad)
+                v_r = r["wind_u"] * math.sin(bias_rad) + r["wind_v"] * math.cos(bias_rad)
             dir_by_time.setdefault(ti, []).append((wt, u_r, v_r))
 
     # 予測: 過去は青線、未来は3時間おきの青矢印（中心をSの線=180°に固定）
