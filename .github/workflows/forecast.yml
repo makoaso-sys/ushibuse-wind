@@ -19,8 +19,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # フォントはチャートの見た目にしか効かないので、失敗しても止めない。
+      # 2026-11-11 15:00Z に runner から Ubuntu ミラーの DNS が引けず apt が
+      # exit 100 で落ち、後続の予測収集・通知まで全部 skipped になった
+      # (その回の fetched_at は後から取り直せない)。
+      # 失敗時は generate_dashboard.py が sans-serif にフォールバックし、
+      # 日本語が豆腐になるだけで生成は続く。
       - name: 日本語フォント(チャートの文字化け防止)
-        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+        id: font
+        continue-on-error: true
+        timeout-minutes: 8     # DNS タイムアウトは1回で3分超かかる。収集を待たせすぎない
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 update &&
+              sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends fonts-noto-cjk &&
+              exit 0
+            echo "apt 失敗 ($i/3)。30秒後に再試行"
+            sleep 30
+          done
+          exit 1
+
+      # continue-on-error は結論を success に書き換えるので outcome で拾う。
+      - name: フォント導入に失敗していたら警告する
+        if: steps.font.outcome == 'failure'
+        run: |
+          echo "::warning title=日本語フォントの導入に失敗::予測収集は続行。今回のチャートは日本語が文字化けする"
+          echo "### ⚠ 日本語フォントの導入に失敗 (apt)" >> "$GITHUB_STEP_SUMMARY"
+          echo "予測収集・通知は正常に続行。今回の forecast.png は日本語が文字化けする。" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-python@v7
         with:
